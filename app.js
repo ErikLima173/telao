@@ -17,6 +17,9 @@ const QUALITY = {
 const MIC_BITRATE = { max: 128000, high: 96000, mid: 64000, low: 32000 };
 const SCREEN_AUDIO_BITRATE = 128000;
 const IS_DESKTOP = !!window.telao; // false = versão web (navegador)
+const IS_MOBILE_DEVICE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+const CAN_SHARE = !!navigator.mediaDevices?.getDisplayMedia && !IS_MOBILE_DEVICE; // navegador de celular não transmite tela
+const isMobile = () => window.matchMedia('(max-width: 768px)').matches;
 const RELEASES_URL = 'https://github.com/ErikLima173/telao-releases/releases/latest';
 // Permissões dos cargos (mesmos bits usados no banco)
 const PERM = { ADMIN: 1, MANAGE_SERVER: 2, MANAGE_ROLES: 4, MANAGE_CHANNELS: 8, KICK: 16, INVITE: 32, SEND: 64, MANAGE_MESSAGES: 128, CONNECT: 256, SPEAK: 512, STREAM: 1024 };
@@ -55,7 +58,7 @@ const S = {
   dms: new Map(), chanServer: new Map(), unread: new Set(),
   presence: new Map(), typing: new Map(), lastTypingSent: 0,
   voice: null, deaf: false, pubs: {}, remote: new Map(), analysers: new Map(), prevVoiceIds: new Set(),
-  roles: [], memberRoles: new Map(), hiddenDMs: new Map(), prevLive: new Set(),
+  roles: [], memberRoles: new Map(), hiddenDMs: new Map(), prevLive: new Set(), lateMsgs: [],
   call: null, incoming: null, showMembers: store.get('telao-members', window.innerWidth > 1180),
   audioPrefs: Object.assign({ in: '', out: '', ns: true, ec: true, agc: true, quality: 'high' }, store.get('telao-audio', {})),
 };
@@ -656,10 +659,14 @@ function renderMembers() {
   }
 }
 function applyMembersToggle() {
-  $('members-panel').classList.toggle('hidden', !S.showMembers || S.mode !== 'server');
-  $('toggle-members').classList.toggle('on', S.showMembers);
+  const mobile = isMobile(); // no celular a lista desliza pela direita (body.members-open)
+  $('members-panel').classList.toggle('hidden', S.mode !== 'server' || (!mobile && !S.showMembers));
+  $('toggle-members').classList.toggle('on', mobile ? document.body.classList.contains('members-open') : S.showMembers);
 }
-$('toggle-members').onclick = () => { S.showMembers = !S.showMembers; store.set('telao-members', S.showMembers); applyMembersToggle(); };
+$('toggle-members').onclick = () => {
+  if (isMobile()) { document.body.classList.remove('nav-open'); document.body.classList.toggle('members-open'); applyMembersToggle(); return; }
+  S.showMembers = !S.showMembers; store.set('telao-members', S.showMembers); applyMembersToggle();
+};
 
 // menu do servidor
 $('server-head').onclick = () => $('server-menu').classList.toggle('hidden');
@@ -762,7 +769,7 @@ $('btn-create-channel').onclick = async () => {
   data.kind === 'text' ? openText(data) : openVoiceView(data);
 };
 
-function showView(which) { for (const v of ['none', 'friends', 'text', 'voice']) $('view-' + v).classList.toggle('hidden', v !== which); }
+function showView(which) { for (const v of ['none', 'friends', 'text', 'voice']) $('view-' + v).classList.toggle('hidden', v !== which); updateCallbar(); }
 
 // ---------- cargos e permissões ----------
 function permsOf(uid) {
@@ -1137,8 +1144,59 @@ function initPlatform() {
   if (IS_DESKTOP) return;
   document.querySelector('.sn[data-sn="advanced"]')?.classList.add('hidden');
   document.querySelector('.picker-hint')?.classList.add('hidden');
-  document.querySelectorAll('.download-app').forEach((b) => b.classList.remove('hidden'));
-  resolveDownloadUrl();
+  if (!IS_MOBILE_DEVICE) { // no celular não faz sentido oferecer o instalador do Windows
+    document.querySelectorAll('.download-app').forEach((b) => b.classList.remove('hidden'));
+    resolveDownloadUrl();
+  }
+  initResponsive();
+}
+
+// ---------- celular ----------
+function initResponsive() {
+  const welcomeHead = el('div', 'main-head mobile-only'); welcomeHead.appendChild(el('b', null, 'Telao'));
+  $('view-none').prepend(welcomeHead);
+  document.querySelectorAll('.main-head').forEach((h) => { // botão ☰ em cada cabeçalho
+    const b = el('button', 'nav-toggle'); b.title = 'Menu'; b.setAttribute('aria-label', 'Abrir menu'); b.appendChild(icon('menu'));
+    b.onclick = openNav; h.prepend(b);
+  });
+  const backdrop = el('div', 'nav-backdrop'); backdrop.id = 'nav-backdrop'; backdrop.onclick = closeOverlays;
+  $('app').appendChild(backdrop);
+  const bar = el('div', 'mobile-callbar hidden'); bar.id = 'mobile-callbar';
+  bar.append(icon('volume'), el('span', null, 'Na chamada'));
+  bar.onclick = () => { if (S.voice) openVoiceView(S.voice.ch); };
+  document.querySelector('.main').prepend(bar);
+  // tocar num canal, numa conversa ou em "Amigos" fecha o menu
+  document.querySelector('.sidebar').addEventListener('click', (e) => {
+    if (!isMobile()) return;
+    if (!e.target.closest('.ch') || e.target.closest('.ch-del, .dm-close, .mini')) return;
+    closeOverlays();
+  });
+  // no toque, editar/apagar aparecem ao tocar na mensagem
+  $('messages').addEventListener('click', (e) => {
+    if (!window.matchMedia('(hover: none)').matches) return;
+    const row = e.target.closest('.msg'); if (!row || e.target.closest('.av, .msg-author, .msg-actions, input')) return;
+    document.querySelectorAll('.msg.show-actions').forEach((x) => { if (x !== row) x.classList.remove('show-actions'); });
+    row.classList.toggle('show-actions');
+  });
+  if (!CAN_SHARE) { $('ctl-share').classList.add('hidden'); $('vp-share').classList.add('hidden'); }
+  window.addEventListener('resize', () => { if (!isMobile()) document.body.classList.remove('nav-open', 'members-open'); applyMembersToggle(); });
+}
+function openNav() { document.body.classList.remove('members-open'); document.body.classList.add('nav-open'); applyMembersToggle(); }
+function closeOverlays() { document.body.classList.remove('nav-open', 'members-open'); applyMembersToggle(); }
+function updateCallbar() {
+  const bar = $('mobile-callbar'); if (!bar) return;
+  const watching = S.voice && S.viewCh?.id === S.voice.channelId && !$('view-voice').classList.contains('hidden');
+  bar.classList.toggle('hidden', !S.voice || !!watching);
+  if (S.voice) bar.querySelector('span').textContent = 'Na chamada: ' + (S.voice.isDM ? nameOf(S.dms.get(S.voice.channelId)?.other) : S.voice.ch.name) + ' — toque para voltar';
+}
+function showAudioUnlock() { // celulares bloqueiam som que não começou com um toque
+  if ($('audio-unlock')) return;
+  const b = el('button', 'audio-unlock', 'Toque para ativar o som da chamada'); b.id = 'audio-unlock';
+  b.onclick = () => {
+    document.querySelectorAll('audio.remote-audio, .tile video:not(.local)').forEach((m) => m.play?.().catch(() => {}));
+    Sound.play('click'); b.remove();
+  };
+  document.body.appendChild(b);
 }
 async function resolveDownloadUrl() { // link direto para o instalador mais recente
   try {
@@ -1194,7 +1252,7 @@ async function openProfile(uid) {
 
 // ---------- chat (canais e DMs) ----------
 async function openText(ch) {
-  S.viewCh = ch; S.textCh = ch; S.unread.delete(ch.id); S.lastRender = null;
+  S.viewCh = ch; S.textCh = ch; S.unread.delete(ch.id); S.lastRender = null; S.lateMsgs = [];
   if (ch.server_id) store.set('telao-last-ch-' + ch.server_id, ch.id);
   const isDM = ch.kind === 'dm';
   if (isDM) unhideDM(ch.id);
@@ -1218,6 +1276,8 @@ async function openText(ch) {
   $('messages').innerHTML = ''; S.lastRender = null;
   if (data.length < 80) $('messages').appendChild(channelWelcome(ch, other));
   data.reverse().forEach((m) => renderMessage(m));
+  // mensagens que chegaram enquanto o histórico carregava
+  for (const m of S.lateMsgs.splice(0)) if (m.channel_id === ch.id && !data.some((d) => d.id === m.id) && !$('messages').querySelector(`[data-id="${m.id}"]`)) renderMessage(m);
   scrollChat(true);
   $('chat-input').focus();
 }
@@ -1306,6 +1366,7 @@ async function onMessageInsert(m) {
   await ensureProfiles([m.author_id]);
   S.typing.delete(m.author_id); renderTyping();
   if (S.textCh?.id === m.channel_id) {
+    S.lateMsgs.push(m);
     if (!$('messages').querySelector(`[data-id="${m.id}"]`)) { renderMessage(m); scrollChat(m.author_id === S.user.id); }
     if (m.author_id !== S.user.id) { if (!document.hasFocus()) notifySound('notify'); else Sound.play('message'); }
     return;
@@ -1343,6 +1404,7 @@ $('chat-form').onsubmit = async (e) => {
   $('chat-input').value = '';
   const { data, error } = await S.sb.from('messages').insert({ channel_id: S.textCh.id, author: S.me.name, text: text.slice(0, 1000) }).select().single();
   if (error) { toast('Não foi possível enviar.'); $('chat-input').value = text; Sound.play('error'); return; }
+  if (data.channel_id === S.textCh?.id) S.lateMsgs.push(data);
   if (data.channel_id === S.textCh?.id && !$('messages').querySelector(`[data-id="${data.id}"]`)) { renderMessage(data); scrollChat(true); }
 };
 $('chat-input').addEventListener('input', () => {
@@ -1388,7 +1450,11 @@ function releaseUnusedPresence() {
 function voiceUsers(scope, channelId) {
   const ch = S.presence.get(scope); if (!ch) return [];
   const out = [];
-  for (const arr of Object.values(ch.presenceState())) for (const p of arr) if (p.voice === channelId && p.peerId) out.push(p);
+  for (const arr of Object.values(ch.presenceState())) for (const p of arr) {
+    if (p.voice !== channelId || !p.peerId) continue;
+    if (p.peerId === S.peerId && S.voice?.channelId !== channelId) continue; // eu já saí; a presença local ainda não atualizou
+    out.push(p);
+  }
   return out;
 }
 function onPresenceSync(scope) {
@@ -1510,19 +1576,21 @@ async function joinVoice(ch) {
 async function leaveVoice() {
   if (!S.voice) return;
   const { serverId } = S.voice;
-  stopCallRinging();
+  stopCallRinging(); // ainda com S.voice, para avisar quem estava sendo chamado
+  const ch = S.presence.get(serverId);
+  S.preMuted = !!S.voice.muted && !S.voice.forced; // mantém o "silenciado" para a próxima chamada
+  S.voice = null; // a partir daqui nada mais atualiza a presença desta chamada
   for (const kind of Object.keys(S.pubs)) unpublish(kind);
   for (const key of [...S.remote.keys()]) removeRemote(key);
   S.analysers.clear();
-  const ch = S.presence.get(serverId);
-  S.preMuted = !!S.voice.muted && !S.voice.forced; // mantém o "silenciado" para a próxima chamada
-  S.voice = null;
-  if (ch) await ch.untrack();
-  releaseUnusedPresence();
+  // a tela atualiza na hora; a saída da presença no servidor vai em seguida
   Sound.play('leave');
   $('voice-panel').classList.add('hidden'); $('tiles').innerHTML = '';
   updateVoiceUI();
+  if (S.server?.id === serverId) renderChannels();
   if (S.viewCh && (S.viewCh.kind === 'voice' || S.viewCh.kind === 'dm') && !S.textCh) openVoiceView(S.viewCh);
+  if (ch) { try { await ch.untrack(); } catch (e) { console.warn('untrack', e); } }
+  releaseUnusedPresence();
 }
 $('vp-leave').onclick = leaveVoice; $('ctl-leave').onclick = leaveVoice;
 $('vp-share').onclick = () => { if (S.pubs.screen) stopShare(); else openPicker(); };
@@ -1553,6 +1621,7 @@ function updateVoiceUI() {
   setIcon($('vp-share'), live ? 'monitorStop' : 'monitor');
   $('btn-mute').title = micOff ? 'Ativar microfone' : 'Silenciar microfone';
   $('btn-deafen').title = S.deaf ? 'Ativar áudio' : 'Ensurdecer';
+  updateCallbar();
 }
 $('btn-mute').onclick = toggleMute; $('ctl-mute').onclick = toggleMute;
 $('btn-deafen').onclick = toggleDeafen; $('ctl-deafen').onclick = toggleDeafen;
@@ -1657,7 +1726,9 @@ function applySink(elm) { if (S.audioPrefs.out && elm.setSinkId) elm.setSinkId(S
 function audioEl(stream) {
   const wrap = el('div', 'hidden'); const a = document.createElement('audio');
   a.className = 'remote-audio'; a.autoplay = true; a.srcObject = stream; a.muted = S.deaf; applySink(a);
-  wrap.appendChild(a); document.body.appendChild(wrap); return wrap;
+  wrap.appendChild(a); document.body.appendChild(wrap);
+  a.play?.().catch(() => showAudioUnlock());
+  return wrap;
 }
 function screenTile(stream, name, local) {
   const tile = el('div', 'tile');
@@ -1669,6 +1740,7 @@ function screenTile(stream, name, local) {
   tile.ondblclick = fs.onclick;
   tile.append(v, label, fs);
   $('tiles').prepend(tile);
+  if (!local) v.play?.().catch(() => showAudioUnlock());
   return tile;
 }
 
@@ -1993,5 +2065,15 @@ window.telao?.onUpdate?.((d) => {
 });
 $('update-btn').onclick = async () => { await leaveVoice(); window.telao.installUpdate(); };
 
-window.addEventListener('beforeunload', () => { S.peer?.destroy(); });
+// Ao fechar ou recarregar: sai da chamada e fecha a conexão na hora, para os outros não continuarem te vendo
+function leaveOnExit() {
+  try {
+    if (S.voice) S.presence.get(S.voice.serverId)?.untrack();
+    S.myOnline?.untrack();
+    S.sb?.realtime?.disconnect();
+  } catch {}
+  S.peer?.destroy();
+}
+window.addEventListener('beforeunload', leaveOnExit);
+window.addEventListener('pagehide', leaveOnExit);
 boot();
