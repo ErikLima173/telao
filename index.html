@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: mediastream:; connect-src 'self' https: wss:;" />
+  <title>Telao</title>
+  <link rel="stylesheet" href="style.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b0c11" />
+  <meta name="description" content="Telao: servidores, amigos, chat, voz e transmissão de tela." />
+  <link rel="icon" type="image/png" href="icon-192.png" />
+  <link rel="manifest" href="manifest.webmanifest" />
+</head>
+<body>
+  <section id="loading" class="screen gate"><div class="brand"><span class="logo-slot"></span>TELAO</div></section>
+
+  <!-- Login / cadastro -->
+  <section id="auth" class="screen gate hidden">
+    <div class="card">
+      <div class="brand"><span class="logo-slot"></span>TELAO</div>
+      <p class="sub" id="auth-sub">Que bom te ver de novo!</p>
+      <div id="auth-name-wrap" class="field hidden">
+        <label>Nome de exibição</label>
+        <input id="auth-name" maxlength="24" />
+      </div>
+      <div class="field"><label>Nome de usuário</label><input id="auth-user" maxlength="20" autocomplete="username" spellcheck="false" /></div>
+      <div class="field"><label>Senha</label><input id="auth-pass" type="password" autocomplete="current-password" /></div>
+      <button id="auth-go" class="primary big">Entrar</button>
+      <p class="small"><span id="auth-switch-text">Precisa de uma conta?</span> <a href="#" id="auth-switch">Criar conta</a></p>
+      <p id="auth-error" class="error"></p>
+      <a href="#" class="download-app dl-link hidden"><i data-i="download"></i> Baixar o app para Windows<span class="download-ver"></span></a>
+    </div>
+  </section>
+
+  <!-- Conta sem perfil -->
+  <section id="setup" class="screen gate hidden">
+    <div class="card">
+      <div class="brand"><span class="logo-slot"></span>TELAO</div>
+      <p class="sub">Falta pouco: crie seu perfil.</p>
+      <div class="field"><label>Nome de usuário</label><input id="setup-user" maxlength="20" spellcheck="false" /></div>
+      <div class="field"><label>Nome de exibição</label><input id="setup-name" maxlength="24" /></div>
+      <button id="setup-go" class="primary big">Continuar</button>
+      <p id="setup-error" class="error"></p>
+    </div>
+  </section>
+
+  <!-- App -->
+  <div id="update-bar" class="update-bar hidden"><span id="update-text"></span><button id="update-btn" class="hidden">Reiniciar e atualizar</button></div>
+  <section id="app" class="screen hidden">
+    <nav class="rail">
+      <button id="rail-home" class="rail-btn home" title="Mensagens diretas"><span class="logo-slot"></span><span id="home-badge" class="rail-badge hidden"></span></button>
+      <div class="rail-sep"></div>
+      <div id="rail-servers" class="rail-servers"></div>
+      <button id="btn-new-server" class="rail-btn add" title="Criar servidor"><i data-i="plus"></i></button>
+      <button class="rail-btn add download-app hidden" title="Baixar o app para Windows"><i data-i="download"></i></button>
+    </nav>
+
+    <aside class="sidebar">
+      <button class="server-head" id="server-head"><span id="server-name"></span><i data-i="chevron" class="chev"></i></button>
+      <div id="server-menu" class="dropdown hidden">
+        <button data-act="invite" class="accent" id="menu-invite"><span>Convidar amigos</span><i data-i="userPlus"></i></button>
+        <button data-act="settings" id="menu-settings"><span>Configurações do servidor</span><i data-i="settings"></i></button>
+        <button data-act="text" id="menu-text"><span>Criar canal de texto</span><i data-i="hash"></i></button>
+        <button data-act="voice" id="menu-voice"><span>Criar canal de voz</span><i data-i="volume"></i></button>
+        <div class="dd-sep"></div>
+        <button data-act="leave" class="danger" id="menu-leave"><span>Sair do servidor</span><i data-i="logout"></i></button>
+      </div>
+      <div class="search-head hidden" id="home-head">Mensagens diretas</div>
+
+      <div id="channel-area" class="channel-area">
+        <div class="section-label"><span>CANAIS DE TEXTO</span><button class="mini" id="add-text" title="Criar canal"><i data-i="plus"></i></button></div>
+        <ul id="text-channels" class="ch-list"></ul>
+        <div class="section-label"><span>CANAIS DE VOZ</span><button class="mini" id="add-voice" title="Criar canal"><i data-i="plus"></i></button></div>
+        <ul id="voice-channels" class="ch-list"></ul>
+      </div>
+      <div id="home-area" class="channel-area hidden">
+        <div class="ch big-ch" id="go-friends"><i data-i="users"></i><span class="nm">Amigos</span><span id="pending-badge" class="count hidden"></span></div>
+        <div class="section-label"><span>MENSAGENS DIRETAS</span></div>
+        <ul id="dm-list" class="ch-list"></ul>
+      </div>
+
+      <div id="voice-panel" class="voice-panel hidden">
+        <div class="vp-text"><div class="vp-status">Voz conectada</div><div class="vp-where" id="vp-where"></div></div>
+        <button id="vp-share" class="icon-btn" title="Transmitir tela"><i data-i="monitor"></i></button>
+        <button id="vp-leave" class="icon-btn danger" title="Desconectar"><i data-i="hangup"></i></button>
+      </div>
+      <div class="me-bar">
+        <button class="me-who" id="me-who" title="Ver meu perfil">
+          <span id="me-avatar-wrap"></span>
+          <span class="me-text"><span class="me-name" id="me-name"></span><span class="me-tag" id="me-tag"></span></span>
+        </button>
+        <button id="btn-mute" class="icon-btn" title="Silenciar microfone"><i data-i="mic"></i></button>
+        <button id="btn-deafen" class="icon-btn" title="Ensurdecer"><i data-i="headphones"></i></button>
+        <button id="btn-settings" class="icon-btn" title="Configurações"><i data-i="settings"></i></button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div id="view-none" class="view center-msg">
+        <div class="hero-logo"><span class="logo-slot"></span></div>
+        <h2>Bem-vindo ao Telao</h2>
+        <p class="muted">Crie um servidor ou adicione amigos para receber convites.</p>
+        <div class="row-gap"><button class="primary" id="cta-create">Criar servidor</button><button class="big" id="cta-friends">Adicionar amigos</button></div>
+      </div>
+
+      <div id="view-friends" class="view hidden">
+        <div class="main-head">
+          <i data-i="users" class="head-ico"></i><b>Amigos</b><span class="head-sep"></span>
+          <button class="ftab active" data-ftab="online">Online</button>
+          <button class="ftab" data-ftab="all">Todos</button>
+          <button class="ftab" data-ftab="pending">Pendentes <span id="pending-count" class="count hidden"></span></button>
+          <button class="ftab add-friend" data-ftab="add">Adicionar amigo</button>
+        </div>
+        <div class="friends-body">
+          <div id="add-friend-box" class="add-box hidden">
+            <h3>ADICIONAR AMIGO</h3>
+            <p class="muted">Digite o nome de usuário do seu amigo. O seu aparece no canto inferior esquerdo (clique para copiar).</p>
+            <form id="add-friend-form" class="add-row">
+              <input id="add-friend-input" placeholder="nome de usuário" autocomplete="off" />
+              <button class="primary" type="submit">Enviar pedido</button>
+            </form>
+            <p id="add-friend-msg" class="small"></p>
+          </div>
+          <div id="friends-list" class="friends-list"></div>
+        </div>
+      </div>
+
+      <div id="view-text" class="view hidden">
+        <div class="main-head">
+          <span id="text-icon" class="head-ico"></span><b id="text-title"></b>
+          <span class="grow"></span>
+          <button id="dm-call" class="head-btn hidden" title="Iniciar chamada de voz"><i data-i="phone"></i></button>
+          <button id="toggle-members" class="head-btn" title="Lista de membros"><i data-i="users"></i></button>
+        </div>
+        <div class="text-wrap">
+          <div class="chat-col">
+            <div id="messages" class="messages"></div>
+            <form id="chat-form" class="chat-form"><input id="chat-input" autocomplete="off" maxlength="1000" /></form>
+            <div id="typing" class="typing"></div>
+          </div>
+          <aside id="members-panel" class="members-panel"></aside>
+        </div>
+      </div>
+
+      <div id="view-voice" class="view hidden">
+        <div class="main-head"><i data-i="volume" class="head-ico"></i><b id="voice-title"></b></div>
+        <div id="voice-join" class="center-msg">
+          <div class="hero-ico"><i data-i="volume"></i></div>
+          <h2 id="voice-join-title"></h2>
+          <p class="muted" id="voice-join-who"></p>
+          <button class="primary big" id="btn-join-voice">Entrar na voz</button>
+        </div>
+        <div id="voice-stage" class="voice-stage hidden">
+          <div id="tiles" class="tiles"></div>
+          <div class="controls">
+            <button id="ctl-mute" class="ctrl" title="Microfone"><i data-i="mic"></i></button>
+            <button id="ctl-deafen" class="ctrl" title="Ensurdecer"><i data-i="headphones"></i></button>
+            <button id="ctl-share" class="ctrl" title="Transmitir tela"><i data-i="monitor"></i></button>
+            <button id="ctl-leave" class="ctrl danger" title="Sair da chamada"><i data-i="hangup"></i></button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </section>
+
+  <!-- Criar servidor -->
+  <div id="modal-server" class="modal hidden">
+    <div class="modal-box small">
+      <div class="modal-head"><h2>Criar servidor</h2><button class="icon close-modal"><i data-i="x"></i></button></div>
+      <div class="modal-body">
+        <p class="muted">Seu servidor é privado: só entra quem você convidar.</p>
+        <div class="srv-preview-row"><div id="srv-preview" class="srv-icon big"></div>
+          <div class="grow"><label>Nome do servidor</label><input id="server-name-input" maxlength="40" /></div></div>
+        <label>Cor</label>
+        <div id="color-pick" class="color-pick"></div>
+        <p class="error" id="server-error"></p>
+      </div>
+      <div class="modal-foot"><span class="grow"></span><button class="primary" id="btn-create-server">Criar</button></div>
+    </div>
+  </div>
+
+  <div id="modal-channel" class="modal hidden">
+    <div class="modal-box small">
+      <div class="modal-head"><h2 id="channel-modal-title">Criar canal</h2><button class="icon close-modal"><i data-i="x"></i></button></div>
+      <div class="modal-body"><label>Nome do canal</label><input id="channel-name-input" maxlength="30" /></div>
+      <div class="modal-foot"><span class="grow"></span><button class="primary" id="btn-create-channel">Criar canal</button></div>
+    </div>
+  </div>
+
+  <div id="modal-invite" class="modal hidden">
+    <div class="modal-box small">
+      <div class="modal-head"><h2 id="invite-title">Convidar amigos</h2><button class="icon close-modal"><i data-i="x"></i></button></div>
+      <div class="modal-body"><div id="invite-list" class="invite-list"></div></div>
+    </div>
+  </div>
+
+  <div id="modal-profile" class="modal hidden"><div class="profile-card" id="profile-card"></div></div>
+
+  <div id="modal-call" class="modal hidden">
+    <div class="call-box">
+      <div id="call-avatar"></div>
+      <div class="call-name" id="call-name"></div>
+      <div class="muted">está te ligando...</div>
+      <div class="call-actions">
+        <button id="call-decline" class="round danger" title="Recusar"><i data-i="hangup"></i></button>
+        <button id="call-accept" class="round ok" title="Atender"><i data-i="phone"></i></button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-mic" class="modal hidden">
+    <div class="modal-box small">
+      <div class="modal-head"><h2 id="mic-help-title">Não foi possível usar o microfone</h2><button class="icon close-modal"><i data-i="x"></i></button></div>
+      <div class="modal-body"><p id="mic-help-text" class="muted"></p><ol id="mic-help-steps" class="steps"></ol></div>
+      <div class="modal-foot"><button class="big" id="mic-help-sound">Configurações de som</button><span class="grow"></span><button class="primary" id="mic-help-privacy">Abrir privacidade do microfone</button></div>
+    </div>
+  </div>
+
+  <!-- Configurações do servidor -->
+  <div id="modal-server-settings" class="modal hidden">
+    <div class="settings">
+      <nav class="settings-nav">
+        <div class="sn-label" id="ss-label">SERVIDOR</div>
+        <button class="sn active" data-ssn="overview">Visão geral</button>
+        <button class="sn" data-ssn="roles">Cargos</button>
+        <button class="sn" data-ssn="members">Membros</button>
+        <div class="dd-sep"></div>
+        <button class="sn danger" id="ss-delete">Excluir servidor</button>
+      </nav>
+      <div class="settings-body">
+        <button class="icon close-modal settings-close"><i data-i="x"></i></button>
+
+        <section data-ssp="overview">
+          <h2>Visão geral do servidor</h2>
+          <div class="srv-overview">
+            <div class="srv-icon-edit">
+              <div id="ss-icon"></div>
+              <button class="primary" id="ss-icon-btn">Trocar ícone</button>
+              <button class="big" id="ss-icon-rm">Remover ícone</button>
+              <p class="small muted">PNG, JPG ou GIF animado, até 8 MB.</p>
+            </div>
+            <div class="grow col-gap">
+              <label>Nome do servidor</label>
+              <input id="ss-name" maxlength="40" />
+              <label>Cor <span class="muted">(aparece quando não há ícone)</span></label>
+              <div id="ss-colors" class="color-pick"></div>
+            </div>
+          </div>
+          <div class="row-gap"><button class="primary" id="ss-save">Salvar alterações</button><span id="ss-msg" class="small"></span></div>
+          <input type="file" id="file-server-icon" accept="image/png,image/jpeg,image/gif,image/webp" class="hidden" />
+        </section>
+
+        <section data-ssp="roles" class="hidden">
+          <h2>Cargos</h2>
+          <p class="muted">Cargos organizam os membros e definem o que cada um pode fazer. Quanto mais alto na lista, mais poder; ninguém mexe em cargos acima do próprio.</p>
+          <div class="roles-layout">
+            <div class="roles-side">
+              <button class="primary" id="role-new">Criar cargo</button>
+              <div id="roles-list" class="roles-list"></div>
+            </div>
+            <div id="role-editor" class="role-editor"></div>
+          </div>
+        </section>
+
+        <section data-ssp="members" class="hidden">
+          <h2>Membros</h2>
+          <input id="ss-member-search" placeholder="Buscar membro" />
+          <div id="ss-members" class="ss-members"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Editar canal -->
+  <div id="modal-channel-edit" class="modal hidden">
+    <div class="modal-box small">
+      <div class="modal-head"><h2 id="ce-title">Editar canal</h2><button class="icon close-modal"><i data-i="x"></i></button></div>
+      <div class="modal-body">
+        <label>Nome do canal</label>
+        <input id="ce-name" maxlength="30" />
+        <label class="check"><input type="checkbox" id="ce-private" /> Canal privado</label>
+        <p class="small muted">Num canal privado, só quem tem um dos cargos marcados (e os administradores) consegue ver o canal.</p>
+        <div id="ce-roles" class="ce-roles"></div>
+      </div>
+      <div class="modal-foot"><button class="danger-btn" id="ce-delete">Apagar canal</button><span class="grow"></span><button class="primary" id="ce-save">Salvar</button></div>
+    </div>
+  </div>
+
+  <div id="modal-confirm" class="modal hidden">
+    <div class="modal-box small">
+      <div class="modal-head"><h2 id="confirm-title"></h2></div>
+      <div class="modal-body"><p id="confirm-text" class="muted"></p></div>
+      <div class="modal-foot"><span class="grow"></span><button class="big" id="confirm-no">Cancelar</button><button class="danger-btn" id="confirm-yes">Confirmar</button></div>
+    </div>
+  </div>
+
+  <!-- Configurações -->
+  <div id="modal-settings" class="modal hidden">
+    <div class="settings">
+      <nav class="settings-nav">
+        <div class="sn-label">CONFIGURAÇÕES DE USUÁRIO</div>
+        <button class="sn active" data-sn="profile">Meu perfil</button>
+        <button class="sn" data-sn="account">Minha conta</button>
+        <div class="sn-label">APLICATIVO</div>
+        <button class="sn" data-sn="voice">Voz e áudio</button>
+        <button class="sn" data-sn="sounds">Sons</button>
+        <button class="sn" data-sn="advanced">Avançado</button>
+        <div class="dd-sep"></div>
+        <button class="sn download-app hidden">Baixar o app para Windows</button>
+        <button class="sn danger" id="btn-logout">Sair da conta</button>
+      </nav>
+      <div class="settings-body">
+        <button class="icon close-modal settings-close"><i data-i="x"></i></button>
+
+        <section data-sp="profile">
+          <h2>Meu perfil</h2>
+          <div class="profile-edit">
+            <div class="pe-form">
+              <label>Foto de perfil <span class="muted">PNG, JPG ou GIF animado (até 8 MB)</span></label>
+              <div class="row-gap"><button class="primary" id="pe-avatar-btn">Trocar foto</button><button class="big" id="pe-avatar-rm">Remover</button></div>
+              <label>Banner <span class="muted">imagem ou GIF</span></label>
+              <div class="row-gap"><button class="primary" id="pe-banner-btn">Trocar banner</button><button class="big" id="pe-banner-rm">Remover</button></div>
+              <label>Cor do banner</label>
+              <input type="color" id="pe-color" />
+              <label>Nome de exibição</label>
+              <input id="pe-name" maxlength="24" />
+              <label>Sobre mim</label>
+              <textarea id="pe-bio" maxlength="190" rows="3"></textarea>
+              <label>Status</label>
+              <select id="pe-status">
+                <option value="online">Online</option>
+                <option value="idle">Ausente</option>
+                <option value="dnd">Não perturbe</option>
+                <option value="invisible">Invisível</option>
+              </select>
+              <div class="row-gap"><button class="primary" id="pe-save">Salvar alterações</button><span id="pe-msg" class="small"></span></div>
+            </div>
+            <div class="pe-preview"><label>Prévia</label><div id="pe-card" class="profile-card"></div></div>
+          </div>
+          <input type="file" id="file-avatar" accept="image/png,image/jpeg,image/gif,image/webp" class="hidden" />
+          <input type="file" id="file-banner" accept="image/png,image/jpeg,image/gif,image/webp" class="hidden" />
+        </section>
+
+        <section data-sp="account" class="hidden">
+          <h2>Minha conta</h2>
+          <label>Nome de usuário</label><div id="acc-handle" class="readonly"></div>
+          <p class="small muted">Use seu nome de usuário e senha para entrar em qualquer PC. Não existe recuperação de senha, então guarde-a bem.</p>
+          <h3>Trocar senha</h3>
+          <input type="password" id="acc-pass1" placeholder="Nova senha (mínimo 6 caracteres)" autocomplete="new-password" />
+          <input type="password" id="acc-pass2" placeholder="Repita a nova senha" autocomplete="new-password" />
+          <div class="row-gap"><button class="primary" id="acc-pass-save">Trocar senha</button><span id="acc-msg" class="small"></span></div>
+        </section>
+
+        <section data-sp="voice" class="hidden">
+          <h2>Voz e áudio</h2>
+          <div class="two-col">
+            <div><label>Microfone</label><select id="dev-in"></select></div>
+            <div><label>Saída de áudio (fone / caixa)</label><select id="dev-out"></select></div>
+          </div>
+          <label>Qualidade do microfone</label>
+          <select id="mic-quality">
+            <option value="max">Máxima — 128 kbps (som de estúdio, usa mais internet)</option>
+            <option value="high">Alta — 96 kbps (recomendado)</option>
+            <option value="mid">Equilibrada — 64 kbps</option>
+            <option value="low">Econômica — 32 kbps (internet fraca)</option>
+          </select>
+          <p class="small muted">A qualidade muda na hora, mesmo durante uma chamada. Se a voz picotar, escolha uma opção mais leve.</p>
+          <label>Teste do microfone</label>
+          <div class="row-gap"><button class="big" id="mic-test">Testar microfone</button><div class="meter"><div id="mic-meter"></div></div></div>
+          <label class="check"><input type="checkbox" id="opt-ns" /> Supressão de ruído</label>
+          <label class="check"><input type="checkbox" id="opt-ec" /> Cancelamento de eco</label>
+          <label class="check"><input type="checkbox" id="opt-agc" /> Ajuste automático de volume do microfone</label>
+          <p class="small muted">As mudanças valem ao entrar de novo numa chamada.</p>
+        </section>
+
+        <section data-sp="advanced" class="hidden">
+          <h2>Avançado</h2>
+          <p class="muted">Use estas opções se a transmissão ou a janela ficarem pretas, ou se o app travar. Elas valem depois de reiniciar o Telao.</p>
+          <label class="check"><input type="checkbox" id="adv-compat" /> Modo de captura de tela compatível <span class="muted">(resolve transmissão preta)</span></label>
+          <label class="check"><input type="checkbox" id="adv-hw" /> Aceleração de hardware <span class="muted">(desligue se a janela ou o vídeo ficarem pretos)</span></label>
+          <div class="row-gap"><button class="primary hidden" id="adv-restart">Reiniciar o Telao agora</button></div>
+          <h3>Diagnóstico</h3>
+          <div class="row-gap wrap"><button class="big" id="adv-diag">Testar microfone e câmera do sistema</button><button class="big" id="adv-privacy">Abrir privacidade do microfone (Windows)</button></div>
+          <pre id="adv-diag-out" class="diag hidden"></pre>
+          <p class="small muted" id="adv-version"></p>
+        </section>
+
+        <section data-sp="sounds" class="hidden">
+          <h2>Sons</h2>
+          <label class="check"><input type="checkbox" id="snd-on" /> Tocar sons do aplicativo</label>
+          <label>Volume dos sons</label>
+          <input type="range" id="snd-vol" min="0" max="1" step="0.05" />
+          <label>Ouvir</label>
+          <div class="row-gap wrap">
+            <button class="big" data-test="message">Mensagem</button>
+            <button class="big" data-test="notify">Notificação</button>
+            <button class="big" data-test="join">Entrar na voz</button>
+            <button class="big" data-test="friendRequest">Pedido de amizade</button>
+            <button class="big" data-test="streamStart">Transmissão</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="picker" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-head"><h2>Escolha o que transmitir</h2><button class="icon close-modal"><i data-i="x"></i></button></div>
+      <div class="tabs"><button class="tab active" data-tab="screen">Telas</button><button class="tab" data-tab="window">Janelas</button></div>
+      <div id="sources" class="sources"></div>
+      <p class="small muted picker-hint">Transmissão aparecendo preta? Ative o <b>Modo de captura compatível</b> em Configurações → Avançado. Janelas minimizadas também aparecem pretas.</p>
+      <div class="modal-foot">
+        <label class="check"><input type="checkbox" id="share-audio" /> Transmitir áudio do PC</label>
+        <select id="quality">
+          <option value="720">720p 30fps</option>
+          <option value="1080" selected>1080p 30fps</option>
+          <option value="1080-60">1080p 60fps</option>
+        </select>
+        <button id="picker-go" class="primary" disabled>Transmitir</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="config.js"></script>
+  <script src="vendor/supabase.js"></script>
+  <script src="vendor/peerjs.min.js"></script>
+  <script src="icons.js"></script>
+  <script src="sounds.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
