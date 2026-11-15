@@ -42,5 +42,8 @@ function icon(name, cls) {
 }
 function hydrateIcons(root = document) {
   root.querySelectorAll('i[data-i]').forEach((i) => i.replaceWith(icon(i.dataset.i, i.className)));
-  root.querySelectorAll('.logo-slot').forEach((e, i) => { e.innerHTML = LOGO_SVG.replace(/lg/g, 'lg' + i + Math.random().toString(36).slice(2, 6)); });
+  root.querySelectorAll('.logo-slot').forEach((e, i) => { // cada cópia do logo precisa de um id de gradiente próprio
+    const id = 'lg' + i + Math.random().toString(36).slice(2, 6);
+    e.innerHTML = LOGO_SVG.split('"lg"').join('"' + id + '"').split('#lg)').join('#' + id + ')');
+  });
 }
