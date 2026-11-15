@@ -240,6 +240,7 @@ async function enterApp() {
   renderRail();
   const last = store.get('telao-last-server', null);
   if (last && S.servers.some((s) => s.id === last)) selectServer(last); else goHome();
+  offerRejoin();
 }
 
 async function claimLegacy() {
@@ -1153,6 +1154,47 @@ function initPlatform() {
   initResponsive();
 }
 
+// ---------- voltar para a chamada depois de atualizar a página ou reabrir o app ----------
+const REJOIN_WINDOW = 2 * 60 * 1000;
+function saveLastCall() {
+  if (!S.voice || !S.user) return;
+  const v = S.voice;
+  store.set('telao-last-call', {
+    uid: S.user.id, channelId: v.channelId, serverId: v.isDM ? null : v.serverId, isDM: v.isDM,
+    name: v.isDM ? nameOf(S.dms.get(v.channelId)?.other) : v.ch?.name, at: Date.now(),
+  });
+}
+function clearLastCall() { try { localStorage.removeItem('telao-last-call'); } catch {} }
+function offerRejoin() {
+  const last = store.get('telao-last-call', null);
+  if (!last || last.uid !== S.user?.id || Date.now() - last.at > REJOIN_WINDOW) { clearLastCall(); return; }
+  $('rejoin-bar')?.remove();
+  const bar = el('div', 'rejoin-bar'); bar.id = 'rejoin-bar';
+  const where = last.name ? (last.isDM ? ' com ' + last.name : ' em ' + last.name) : '';
+  const go = el('button', 'rejoin-go'); go.append(icon('phone'), el('span', null, 'Voltar para a chamada'));
+  const x = el('button', 'rejoin-x'); x.title = 'Dispensar'; x.appendChild(icon('x'));
+  let timer = null;
+  const close = () => { clearTimeout(timer); bar.remove(); clearLastCall(); };
+  go.onclick = async () => { close(); await rejoinLastCall(last); };
+  x.onclick = close;
+  bar.append(icon('volume'), el('span', 'rejoin-text', 'Você saiu da chamada' + where + ' ao atualizar.'), go, x);
+  document.body.appendChild(bar);
+  timer = setTimeout(close, Math.max(1000, REJOIN_WINDOW - (Date.now() - last.at)));
+}
+async function rejoinLastCall(last) {
+  let ch = null;
+  if (last.isDM) {
+    if (!S.dms.has(last.channelId)) await loadDMs();
+    ch = S.dms.get(last.channelId)?.ch || null;
+    if (ch && S.mode !== 'home') goHome();
+  } else if (last.serverId && S.servers.some((s) => s.id === last.serverId)) {
+    if (S.server?.id !== last.serverId) await selectServer(last.serverId);
+    ch = S.channels.find((c) => c.id === last.channelId) || null;
+  }
+  if (!ch) { toast('Essa chamada não está mais disponível.'); return; }
+  joinVoice(ch);
+}
+
 // ---------- celular ----------
 function initResponsive() {
   const welcomeHead = el('div', 'main-head mobile-only'); welcomeHead.appendChild(el('b', null, 'Telao'));
@@ -1602,6 +1644,8 @@ async function joinVoice(ch) {
   $('voice-panel').classList.remove('hidden');
   $('vp-where').textContent = isDM ? nameOf(S.dms.get(ch.id)?.other) : ch.name + ' / ' + (S.server?.name || '');
   updateVoiceUI(); openVoiceView(ch); renderUserTiles();
+  $('rejoin-bar')?.remove();
+  saveLastCall(); clearInterval(S.callBeat); S.callBeat = setInterval(saveLastCall, 15000); // lembra a chamada, para oferecer a volta
   if (micErr) showMicHelp(micErr);
   else if (forced) toast('Você entrou sem permissão para falar neste canal.');
 }
@@ -1615,6 +1659,7 @@ async function leaveVoice() {
   for (const kind of Object.keys(S.pubs)) unpublish(kind);
   for (const key of [...S.remote.keys()]) removeRemote(key);
   S.analysers.clear(); S.watching.clear(); S.rewatch.clear();
+  clearInterval(S.callBeat); clearLastCall(); // saiu de propósito: não oferece voltar
   // a tela atualiza na hora; a saída da presença no servidor vai em seguida
   Sound.play('leave');
   $('voice-panel').classList.add('hidden'); $('tiles').innerHTML = '';
@@ -2290,6 +2335,7 @@ $('update-btn').onclick = async () => { await leaveVoice(); window.telao.install
 // Ao fechar ou recarregar: sai da chamada e fecha a conexão na hora, para os outros não continuarem te vendo
 function leaveOnExit() {
   try {
+    saveLastCall(); // atualizou ou fechou no meio da chamada: oferece voltar ao abrir de novo
     if (S.voice) S.presence.get(S.voice.serverId)?.untrack();
     S.myOnline?.untrack();
     S.sb?.realtime?.disconnect();
