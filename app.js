@@ -20,6 +20,7 @@ const IS_DESKTOP = !!window.telao; // false = versão web (navegador)
 const IS_MOBILE_DEVICE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
 const CAN_SHARE = !!navigator.mediaDevices?.getDisplayMedia && !IS_MOBILE_DEVICE; // navegador de celular não transmite tela
 const isMobile = () => window.matchMedia('(max-width: 768px)').matches;
+const DEVICE_ID = Math.random().toString(36).slice(2, 10); // identifica esta janela/aparelho
 const RELEASES_URL = 'https://github.com/ErikLima173/telao-releases/releases/latest';
 // Permissões dos cargos (mesmos bits usados no banco)
 const PERM = { ADMIN: 1, MANAGE_SERVER: 2, MANAGE_ROLES: 4, MANAGE_CHANNELS: 8, KICK: 16, INVITE: 32, SEND: 64, MANAGE_MESSAGES: 128, CONNECT: 256, SPEAK: 512, STREAM: 1024 };
@@ -58,7 +59,7 @@ const S = {
   dms: new Map(), chanServer: new Map(), unread: new Set(),
   presence: new Map(), typing: new Map(), lastTypingSent: 0,
   voice: null, deaf: false, pubs: {}, remote: new Map(), analysers: new Map(), prevVoiceIds: new Set(),
-  roles: [], memberRoles: new Map(), hiddenDMs: new Map(), prevLive: new Set(), lateMsgs: [],
+  roles: [], memberRoles: new Map(), hiddenDMs: new Map(), prevLive: new Set(), lateMsgs: [], watching: new Set(), liveStart: 0, rewatch: new Map(),
   call: null, incoming: null, showMembers: store.get('telao-members', window.innerWidth > 1180),
   audioPrefs: Object.assign({ in: '', out: '', ns: true, ec: true, agc: true, quality: 'high' }, store.get('telao-audio', {})),
 };
@@ -71,7 +72,7 @@ function initials(name) { const w = String(name).trim().split(/\s+/).slice(0, 2)
 let toastTimer;
 function toast(text) { const t = $('toast'); t.textContent = text; t.classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), 3200); }
 function openModal(id) { $(id).classList.remove('hidden'); }
-function closeModal(id) { $(id).classList.add('hidden'); if (id === 'modal-settings') stopMicTest(); }
+function closeModal(id) { $(id).classList.add('hidden'); if (id === 'modal-settings') stopMicTest(); if (id === 'picker') stopPicker(); }
 function confirmBox(title, text, yes = 'Confirmar') {
   return new Promise((res) => {
     $('confirm-title').textContent = title; $('confirm-text').textContent = text; $('confirm-yes').textContent = yes;
@@ -234,6 +235,7 @@ async function enterApp() {
   renderMe(); startPeer(); applyMembersToggle();
   await Promise.all([loadFriendships(), loadInvites(), loadServers(), loadDMs(), loadHiddenDMs()]);
   subscribeDb(); startMyOnline(); syncOnlineSubs(); subscribeRing();
+  clearInterval(S.healTimer); S.healTimer = setInterval(healRealtime, 10000); // reconecta canais que caírem
   await claimLegacy();
   renderRail();
   const last = store.get('telao-last-server', null);
@@ -256,7 +258,7 @@ $('me-who').onclick = () => { navigator.clipboard.writeText(S.me.username); toas
 
 // ---------- banco em tempo real ----------
 function subscribeDb() {
-  S.sb.channel('db')
+  S.dbCh = S.sb.channel('db')
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (p) => onMessageInsert(p.new))
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, (p) => onMessageUpdate(p.new))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'friendships' }, (p) => onFriendshipChange(p))
@@ -1431,31 +1433,58 @@ $('dm-call').onclick = () => { const d = S.dms.get(S.textCh?.id); if (d) startCa
 
 // ---------- presença por servidor/DM (quem está na voz + digitando) ----------
 const scopeOf = (ch) => ch.server_id || ch.id;
+const isDeadChannel = (ch) => !ch || ch.state === 'closed';
+function presenceInUse(scope) { return S.server?.id === scope || S.voice?.serverId === scope || (S.textCh && scopeOf(S.textCh) === scope); }
+function dropChannel(ch) { if (!ch) return; ch._intentional = true; S.sb.removeChannel(ch); }
 function ensurePresence(scope) {
-  if (S.presence.has(scope)) return S.presence.get(scope);
+  const existing = S.presence.get(scope);
+  if (existing && !isDeadChannel(existing)) return existing;
+  if (existing) { dropChannel(existing); S.presence.delete(scope); }
   const ch = S.sb.channel('voice:' + scope, { config: { private: true, presence: { key: S.user.id + ':' + Math.random().toString(36).slice(2, 8) } } });
   ch.on('presence', { event: 'sync' }, () => onPresenceSync(scope));
   ch.on('broadcast', { event: 'typing' }, ({ payload }) => onTyping(payload));
   ch.on('broadcast', { event: 'refresh' }, () => { if (S.server?.id === scope) loadRoles().then(loadChannels); });
-  ch.subscribe((st) => { if (st === 'SUBSCRIBED' && S.voice?.serverId === scope) trackVoice(); });
+  ch.on('broadcast', { event: 'watch' }, ({ payload }) => onWatchRequest(payload, scope));
+  ch.on('broadcast', { event: 'unwatch' }, ({ payload }) => onUnwatch(payload, scope));
+  ch.subscribe((st, err) => {
+    if (st === 'SUBSCRIBED') { if (S.voice?.serverId === scope) trackVoice(); return; }
+    if (st !== 'CLOSED' || ch._intentional) return;
+    // o servidor fechou o canal: recria e volta para a chamada com o mesmo estado
+    console.warn('canal de presença fechado pelo servidor; reconectando', err?.message || '');
+    setTimeout(() => {
+      if (S.presence.get(scope) !== ch || !presenceInUse(scope)) return;
+      S.presence.delete(scope); dropChannel(ch); ensurePresence(scope);
+    }, 1500);
+  });
   S.presence.set(scope, ch);
   return ch;
+}
+function healRealtime() { // confere os canais de tempo real e reconecta o que tiver caído
+  if (!S.user || !S.sb) return;
+  if (S.dbCh && isDeadChannel(S.dbCh)) { dropChannel(S.dbCh); subscribeDb(); }
+  if (S.myOnline && isDeadChannel(S.myOnline)) { dropChannel(S.myOnline); startMyOnline(); }
+  if (S.ringCh && isDeadChannel(S.ringCh)) { dropChannel(S.ringCh); subscribeRing(); }
+  let lostFriends = false;
+  for (const [uid, ch] of [...S.onlineSubs]) if (isDeadChannel(ch)) { dropChannel(ch); S.onlineSubs.delete(uid); lostFriends = true; }
+  if (lostFriends) syncOnlineSubs();
+  for (const [scope, ch] of [...S.presence]) if (isDeadChannel(ch) && presenceInUse(scope)) { S.presence.delete(scope); dropChannel(ch); ensurePresence(scope); }
 }
 function releaseUnusedPresence() {
   for (const [scope, ch] of S.presence) {
     const inUse = S.server?.id === scope || S.voice?.serverId === scope || (S.textCh && scopeOf(S.textCh) === scope);
-    if (!inUse) { S.sb.removeChannel(ch); S.presence.delete(scope); }
+    if (!inUse) { dropChannel(ch); S.presence.delete(scope); }
   }
 }
 function voiceUsers(scope, channelId) {
   const ch = S.presence.get(scope); if (!ch) return [];
-  const out = [];
+  const byUid = new Map(); // a mesma pessoa aparece uma vez só (mesmo com conexão antiga ou outro aparelho)
   for (const arr of Object.values(ch.presenceState())) for (const p of arr) {
     if (p.voice !== channelId || !p.peerId) continue;
     if (p.peerId === S.peerId && S.voice?.channelId !== channelId) continue; // eu já saí; a presença local ainda não atualizou
-    out.push(p);
+    const cur = byUid.get(p.uid);
+    if (!cur || p.peerId === S.peerId || (cur.peerId !== S.peerId && (p.at || 0) > (cur.at || 0))) byUid.set(p.uid, p);
   }
-  return out;
+  return [...byUid.values()];
 }
 function onPresenceSync(scope) {
   if (S.server?.id === scope) { renderChannels(); if (S.viewCh?.kind === 'voice') updateVoiceJoinInfo(); }
@@ -1463,8 +1492,10 @@ function onPresenceSync(scope) {
 }
 async function trackVoice() {
   if (!S.voice) return;
-  const ch = S.presence.get(S.voice.serverId); if (!ch) return;
-  await ch.track({ uid: S.user.id, peerId: S.peerId, voice: S.voice.channelId, mic: !!S.voice.mic && !S.voice.muted && !S.deaf, deaf: S.deaf, live: !!S.pubs.screen });
+  const ch = S.presence.get(S.voice.serverId);
+  if (isDeadChannel(ch)) { ensurePresence(S.voice.serverId); return; } // o canal novo envia a presença ao conectar
+  await ch.track({ uid: S.user.id, peerId: S.peerId, voice: S.voice.channelId, mic: !!S.voice.mic && !S.voice.muted && !S.deaf, deaf: S.deaf,
+    live: !!S.pubs.screen, watchers: S.pubs.screen ? S.pubs.screen.calls.size : 0, at: S.voice.joinedAt });
 }
 
 // ---------- voz ----------
@@ -1561,7 +1592,8 @@ async function joinVoice(ch) {
   try { mic = await getMic(); } catch (err) { console.warn('mic', err); micErr = err; }
   const scope = scopeOf(ch); const isDM = ch.kind === 'dm';
   const forced = !isDM && !can(PERM.SPEAK);
-  S.voice = { serverId: scope, channelId: ch.id, ch, mic, muted: forced || !!S.preMuted, forced, isDM, perms: isDM ? PERM_ALL : permsOf(S.user.id) };
+  S.voice = { serverId: scope, channelId: ch.id, ch, mic, muted: forced || !!S.preMuted, forced, isDM, perms: isDM ? PERM_ALL : permsOf(S.user.id), joinedAt: Date.now() };
+  claimVoice(); // se esta conta estiver numa chamada em outro aparelho, ele sai
   S.prevVoiceIds = new Set(); S.prevLive = new Set(); S.voiceSettled = false;
   setMicTracks();
   ensurePresence(scope); await trackVoice();
@@ -1582,7 +1614,7 @@ async function leaveVoice() {
   S.voice = null; // a partir daqui nada mais atualiza a presença desta chamada
   for (const kind of Object.keys(S.pubs)) unpublish(kind);
   for (const key of [...S.remote.keys()]) removeRemote(key);
-  S.analysers.clear();
+  S.analysers.clear(); S.watching.clear(); S.rewatch.clear();
   // a tela atualiza na hora; a saída da presença no servidor vai em seguida
   Sound.play('leave');
   $('voice-panel').classList.add('hidden'); $('tiles').innerHTML = '';
@@ -1646,15 +1678,35 @@ function onVoiceMembers() {
   for (const [key, r] of [...S.remote]) {
     const [pid, kind] = key.split(':'); if (pid === 'local') continue;
     const u = users.find((x) => x.peerId === pid);
-    if (!u) removeRemote(key); else if (kind === 'screen' && !u.live && Date.now() - r.at > 3000) removeRemote(key);
+    if (!u) { if (kind === 'screen') S.rewatch.set(pid, Date.now() + 15000); removeRemote(key); } // pode voltar já já
+    else if (kind === 'screen' && !u.live && Date.now() - r.at > 3000) removeRemote(key);
   }
-  for (const [kind, pub] of Object.entries(S.pubs)) for (const id of ids) if (!pub.calls.has(id)) callPeer(kind, id);
+  // a voz vai para todos; a tela só para quem pediu para assistir
+  for (const [kind, pub] of Object.entries(S.pubs)) if (kind !== 'screen') for (const id of ids) if (!pub.calls.has(id)) callPeer(kind, id);
+  for (const id of [...S.watching]) if (!users.some((u) => u.peerId === id && u.live)) S.watching.delete(id);
+  tryRewatch();
   ensureProfiles(users.map((u) => u.uid)).then(renderUserTiles);
 }
 function renderUserTiles() {
-  const box = $('tiles'); box.querySelectorAll('.tile.user').forEach((t) => t.remove());
+  const box = $('tiles'); box.querySelectorAll('.tile.user, .tile.stream-card').forEach((t) => t.remove());
   if (!S.voice) return;
   const users = voiceUsers(S.voice.serverId, S.voice.channelId);
+  // cartão "Fulano está ao vivo — Assistir" para cada transmissão que você ainda não está vendo
+  for (const u of users) {
+    if (!u.live || u.peerId === S.peerId || S.remote.has(u.peerId + ':screen')) continue;
+    const p = prof(u.uid);
+    const card = el('div', 'tile stream-card');
+    const bg = el('div', 'sc-bg'); if (p?.banner_url) bg.style.backgroundImage = `url("${p.banner_url}")`; else bg.style.background = p?.color || '#5865f2';
+    const inner = el('div', 'sc-inner');
+    const top = el('div', 'sc-top'); top.appendChild(el('span', 'badge-live', 'AO VIVO'));
+    if (u.watchers) { const w = el('span', 'sc-watchers'); w.append(icon('eye'), document.createTextNode(String(u.watchers))); top.appendChild(w); }
+    const connecting = S.watching.has(u.peerId);
+    const btn = el('button', 'sc-btn', connecting ? 'Conectando...' : 'Assistir transmissão'); btn.disabled = connecting;
+    btn.onclick = (e) => { e.stopPropagation(); watchStream(u); };
+    inner.append(top, avatar(u.uid, 56), el('div', 'sc-name', nameOf(u.uid)), el('div', 'sc-sub', 'está transmitindo a tela'), btn);
+    card.append(bg, inner);
+    box.prepend(card);
+  }
   if (!users.some((u) => u.peerId === S.peerId)) users.unshift({ uid: S.user.id, peerId: S.peerId, mic: S.voice.mic && !S.voice.muted && !S.deaf, deaf: S.deaf });
   for (const u of users) {
     const t = el('div', 'tile user'); t.dataset.peer = u.peerId;
@@ -1671,6 +1723,7 @@ function renderUserTiles() {
 async function publish(kind, stream, bitrate) {
   S.pubs[kind] = { stream, calls: new Map(), bitrate };
   await trackVoice();
+  if (kind === 'screen') return; // a tela só vai para quem clicar em "Assistir"
   for (const u of voiceUsers(S.voice.serverId, S.voice.channelId)) if (u.peerId !== S.peerId) callPeer(kind, u.peerId);
 }
 function callPeer(kind, id) {
@@ -1679,7 +1732,11 @@ function callPeer(kind, id) {
   pub.calls.set(id, call);
   const pc = call.peerConnection;
   if (pc) pc.addEventListener('connectionstatechange', () => { if (pc.connectionState === 'connected') applyBitrates(pc, kind, pub); });
-  const drop = () => { if (pub.calls.get(id) === call) pub.calls.delete(id); };
+  const drop = () => {
+    if (pub.calls.get(id) !== call) return;
+    pub.calls.delete(id);
+    if (kind === 'screen' && S.pubs.screen === pub) { updateLiveHud(); trackVoice(); }
+  };
   call.on('close', drop); call.on('error', drop);
 }
 function applyBitrates(pc, kind, pub) {
@@ -1696,7 +1753,7 @@ function unpublish(kind) {
   delete S.pubs[kind];
   pub.stream.getTracks().forEach((t) => t.stop());
   for (const c of pub.calls.values()) c.close();
-  if (kind === 'screen') removeRemote('local:screen');
+  if (kind === 'screen') { removeRemote('local:screen'); stopLiveHud(); }
   trackVoice(); updateVoiceUI();
 }
 function onIncomingCall(call) {
@@ -1712,15 +1769,41 @@ function onIncomingCall(call) {
     if (kind === 'voice') { entry.el = audioEl(stream); watchSpeaking(call.peer, stream); }
     else {
       const u = voiceUsers(S.voice.serverId, S.voice.channelId).find((x) => x.peerId === call.peer);
-      entry.el = screenTile(stream, u ? nameOf(u.uid) : 'Alguém', false);
+      S.watching.add(call.peer);
+      entry.el = screenTile(stream, u ? nameOf(u.uid) : 'Alguém', false, call.peer);
+      renderUserTiles();
     }
   });
-  call.on('close', () => { if (S.remote.get(key) === entry) removeRemote(key); });
+  call.on('close', () => {
+    if (S.remote.get(key) !== entry) return; // já foi removido (ex.: clicou em "Parar de assistir")
+    removeRemote(key);
+    if (kind === 'screen') autoRewatch(call.peer);
+  });
+}
+// se a transmissão que você assistia cair sozinha, volta a assistir assim que ela estiver disponível de novo
+function autoRewatch(peerId) { S.rewatch.set(peerId, Date.now() + 15000); setTimeout(tryRewatch, 1200); }
+function tryRewatch() {
+  if (!S.voice) return;
+  const now = Date.now();
+  for (const [pid, until] of [...S.rewatch]) {
+    if (until < now) { S.rewatch.delete(pid); continue; }
+    const u = voiceUsers(S.voice.serverId, S.voice.channelId).find((x) => x.peerId === pid && x.live);
+    if (u && !S.remote.has(pid + ':screen') && !S.watching.has(pid)) { S.rewatch.delete(pid); watchStream(u); }
+  }
+}
+// uma chamada por conta: entrar na voz em outro aparelho tira este da chamada (como no Discord)
+function claimVoice() {
+  if (S.ringCh && S.voice) S.ringCh.send({ type: 'broadcast', event: 'voice-claim', payload: { device: DEVICE_ID, at: S.voice.joinedAt } });
+}
+function onVoiceClaim(p) {
+  if (!S.voice || !p || p.device === DEVICE_ID || !(p.at > S.voice.joinedAt)) return;
+  leaveVoice(); toast('Você entrou na chamada em outro aparelho, então saiu daqui.');
 }
 function removeRemote(key) {
   const r = S.remote.get(key); if (!r) return;
   S.remote.delete(key); r.call?.close(); r.el?.remove();
   if (key.endsWith(':voice')) S.analysers.delete(key.split(':')[0]);
+  if (key.endsWith(':screen') && !key.startsWith('local:')) { S.watching.delete(key.split(':')[0]); if (S.voice) renderUserTiles(); }
 }
 function applySink(elm) { if (S.audioPrefs.out && elm.setSinkId) elm.setSinkId(S.audioPrefs.out).catch(() => {}); }
 function audioEl(stream) {
@@ -1730,15 +1813,20 @@ function audioEl(stream) {
   a.play?.().catch(() => showAudioUnlock());
   return wrap;
 }
-function screenTile(stream, name, local) {
-  const tile = el('div', 'tile');
+function screenTile(stream, name, local, peerId) {
+  const tile = el('div', 'tile stream-tile');
   const v = document.createElement('video'); v.autoplay = true; v.playsInline = true; v.srcObject = stream;
   v.muted = local || S.deaf; if (local) v.classList.add('local'); applySink(v);
-  const label = el('div', 'label'); label.append(el('span', 'badge-live', 'AO VIVO'), el('span', null, local ? 'Sua tela' : name));
+  const label = el('div', 'label'); label.append(el('span', 'badge-live', 'AO VIVO'), el('span', null, local ? 'Sua transmissão' : name));
   const fs = el('button', 'fs'); fs.title = 'Tela cheia'; fs.appendChild(icon('maximize'));
   fs.onclick = (e) => { e.stopPropagation(); document.fullscreenElement ? document.exitFullscreen() : tile.requestFullscreen(); };
   tile.ondblclick = fs.onclick;
   tile.append(v, label, fs);
+  if (!local && peerId) { // quem assiste pode parar quando quiser
+    const stop = el('button', 'sw-stop'); stop.title = 'Parar de assistir'; stop.append(icon('x'), el('span', null, 'Parar de assistir'));
+    stop.onclick = (e) => { e.stopPropagation(); stopWatching(peerId); };
+    tile.appendChild(stop);
+  }
   $('tiles').prepend(tile);
   if (!local) v.play?.().catch(() => showAudioUnlock());
   return tile;
@@ -1769,6 +1857,7 @@ setInterval(() => {
 function subscribeRing() {
   const ch = S.sb.channel('ring:' + S.user.id, { config: { private: true } });
   ch.on('broadcast', { event: 'ring' }, ({ payload }) => onRing(payload));
+  ch.on('broadcast', { event: 'voice-claim' }, ({ payload }) => onVoiceClaim(payload));
   ch.on('broadcast', { event: 'cancel' }, ({ payload }) => { if (S.incoming?.from === payload.from) closeIncoming(); });
   ch.on('broadcast', { event: 'decline' }, ({ payload }) => {
     if (S.call?.to === payload.from) {
@@ -1777,6 +1866,7 @@ function subscribeRing() {
     }
   });
   ch.subscribe();
+  S.ringCh = ch;
 }
 async function sendRing(to, event, payload) {
   const ch = S.sb.channel('ring:' + to, { config: { private: true } });
@@ -1825,59 +1915,191 @@ $('call-accept').onclick = async () => {
 };
 $('call-decline').onclick = () => { const inc = S.incoming; closeIncoming(); if (inc) sendRing(inc.from, 'decline', { from: S.user.id }); };
 
-// ---------- transmitir tela ----------
-let pickerTab = 'screen', pickerSel = null, pickerSources = [];
-$('ctl-share').onclick = () => { if (S.pubs.screen) stopShare(); else openPicker(); };
-async function openPicker() {
+// ---------- Telao Ao Vivo (transmitir tela) ----------
+let pickerTab = 'screen', pickerSel = null, pickerSources = [], pickerMode = 'start', pickerQuality = '1080';
+let previewStream = null, previewToken = 0, pickerRefresh = null, liveTimer = null;
+$('ctl-share').onclick = () => { if (S.pubs.screen) stopShare(); else openPicker('start'); };
+$('live-switch').onclick = () => openPicker('switch');
+$('live-stop').onclick = () => stopShare();
+document.querySelectorAll('#live-tabs .seg-btn').forEach((t) => (t.onclick = () => {
+  document.querySelectorAll('#live-tabs .seg-btn').forEach((x) => x.classList.toggle('active', x === t));
+  pickerTab = t.dataset.tab; renderSources();
+}));
+document.querySelectorAll('#live-quality .seg-btn').forEach((b) => (b.onclick = () => {
+  pickerQuality = b.dataset.q;
+  document.querySelectorAll('#live-quality .seg-btn').forEach((x) => x.classList.toggle('active', x === b));
+}));
+async function openPicker(mode = 'start') {
   if (!S.voice) { toast('Entre em uma chamada para transmitir.'); return; }
   if (!S.voice.isDM && !(S.voice.perms & PERM.STREAM)) { toast('Você não tem permissão para transmitir neste canal.'); Sound.play('error'); return; }
-  pickerSel = null;
-  document.querySelector('#picker .tabs').classList.toggle('hidden', !IS_DESKTOP);
-  if (!IS_DESKTOP) { // no navegador, quem mostra as telas e janelas é o próprio navegador
-    $('sources').innerHTML = '<div class="web-share-note">Ao clicar em <b>Transmitir</b>, o navegador vai perguntar o que você quer compartilhar: a tela inteira, uma janela ou uma aba.</div>';
-    $('picker-go').disabled = false; openModal('picker'); return;
+  if (!IS_DESKTOP && !CAN_SHARE) { toast('Transmitir a tela só funciona no computador.'); return; }
+  pickerMode = mode; pickerSel = null;
+  $('live-title').textContent = mode === 'switch' ? 'Trocar transmissão' : 'Transmitir ao vivo';
+  $('live-sub').textContent = mode === 'switch' ? 'Escolha a nova tela ou janela. A transmissão continua sem cair.' : 'Escolha o que seus amigos vão ver.';
+  $('picker-go-text').textContent = mode === 'switch' ? 'Trocar agora' : 'Entrar ao vivo';
+  $('live-tabs').classList.toggle('hidden', !IS_DESKTOP);
+  showPreview(null);
+  openModal('picker');
+  if (!IS_DESKTOP) { // no navegador, a escolha da tela é sempre feita pela janela do próprio navegador
+    const box = $('sources'); box.innerHTML = '';
+    const note = el('div', 'web-share-note');
+    note.append(el('b', null, 'Você está no navegador. '), document.createTextNode('Por segurança, todo navegador mostra a janela dele para você escolher a tela, a janela ou a aba. Depois disso, a transmissão segue no formato do Telao.'));
+    if (!IS_MOBILE_DEVICE) {
+      const dl = el('a', 'download-app dl-link'); dl.href = '#';
+      dl.append(icon('download'), document.createTextNode(' No app para Windows essa janela não aparece'));
+      note.append(el('br'), dl);
+    }
+    box.appendChild(note);
+    $('lp-empty-text').textContent = 'A prévia aparece depois que você escolher no navegador.';
+    $('picker-go').disabled = false;
+    return;
   }
-  $('picker-go').disabled = true; openModal('picker');
+  $('picker-go').disabled = true;
   $('sources').innerHTML = '<div class="muted">Carregando...</div>';
-  pickerSources = await window.telao.getSources();
-  renderSources();
+  await refreshSources();
+  clearInterval(pickerRefresh); pickerRefresh = setInterval(refreshSources, 4000); // miniaturas sempre atualizadas
+}
+async function refreshSources() {
+  if ($('picker').classList.contains('hidden')) { clearInterval(pickerRefresh); return; }
+  try { pickerSources = await window.telao.getSources(); } catch { return; }
+  if (!$('picker').classList.contains('hidden')) renderSources();
 }
 function renderSources() {
   const box = $('sources'); box.innerHTML = '';
   const list = pickerSources.filter((s) => (pickerTab === 'screen') === s.isScreen);
-  if (!list.length) box.appendChild(el('div', 'muted', 'Nada encontrado.'));
+  if (!list.length) box.appendChild(el('div', 'muted', pickerTab === 'screen' ? 'Nenhuma tela encontrada.' : 'Nenhuma janela aberta para transmitir.'));
   for (const s of list) {
     const b = el('button', 'source' + (pickerSel === s.id ? ' sel' : ''));
-    let img; if (s.thumb) { img = document.createElement('img'); img.src = s.thumb; } else { img = el('div', 'no-thumb'); img.appendChild(icon('monitor')); }
-    b.append(img, el('div', null, s.name));
-    b.onclick = () => { pickerSel = s.id; $('picker-go').disabled = false; renderSources(); };
-    b.ondblclick = () => { pickerSel = s.id; startShare(); };
+    const thumb = el('div', 'src-thumb');
+    if (s.thumb) { const img = document.createElement('img'); img.src = s.thumb; img.alt = ''; thumb.appendChild(img); } else thumb.appendChild(icon('monitor'));
+    const cap = el('div', 'src-cap');
+    if (s.icon) { const ic = document.createElement('img'); ic.className = 'src-icon'; ic.src = s.icon; ic.alt = ''; cap.appendChild(ic); }
+    else cap.appendChild(icon(s.isScreen ? 'monitor' : 'appWindow', 'src-icon'));
+    cap.appendChild(el('span', null, s.name));
+    b.append(thumb, cap);
+    b.onclick = () => selectSource(s.id);
+    b.ondblclick = () => { selectSource(s.id); startShare(); };
     box.appendChild(b);
   }
 }
-document.querySelectorAll('.tab').forEach((t) => (t.onclick = () => {
-  document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x === t));
-  pickerTab = t.dataset.tab; renderSources();
-}));
+async function selectSource(id) {
+  if (pickerSel === id) return;
+  pickerSel = id; $('picker-go').disabled = false; renderSources();
+  const token = ++previewToken;
+  stopPreview();
+  try { // prévia ao vivo, leve (15 fps), só no seu PC
+    await window.telao.chooseSource(id, false);
+    const st = await navigator.mediaDevices.getDisplayMedia({ video: { width: { ideal: 960 }, frameRate: { ideal: 15 } }, audio: false });
+    if (token !== previewToken || $('picker').classList.contains('hidden')) { st.getTracks().forEach((t) => t.stop()); return; }
+    previewStream = st; showPreview(st);
+  } catch {
+    if (token === previewToken) { showPreview(null); $('lp-empty-text').textContent = 'Não deu para mostrar a prévia, mas você ainda pode transmitir.'; }
+  }
+}
+function showPreview(stream) {
+  const v = $('live-preview-video'); v.srcObject = stream || null;
+  $('lp-empty').classList.toggle('hidden', !!stream);
+  if (stream) v.play?.().catch(() => {}); else $('lp-empty-text').textContent = 'Escolha uma tela ou janela para ver a prévia.';
+}
+function stopPreview() { if (previewStream) { previewStream.getTracks().forEach((t) => t.stop()); previewStream = null; } }
+function stopPicker() { clearInterval(pickerRefresh); pickerRefresh = null; previewToken++; stopPreview(); showPreview(null); }
 $('picker-go').onclick = () => startShare();
+
+async function captureScreen() { // captura a tela escolhida na qualidade escolhida
+  const withAudio = $('share-audio').checked; const q = QUALITY[pickerQuality] || QUALITY['1080'];
+  if (IS_DESKTOP) await window.telao.chooseSource(pickerSel, withAudio);
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: { width: { ideal: q.width }, height: { ideal: q.height }, frameRate: { ideal: q.frameRate } }, audio: withAudio,
+    systemAudio: withAudio ? 'include' : 'exclude', selfBrowserSurface: 'exclude', surfaceSwitching: 'exclude',
+  });
+  const vt = stream.getVideoTracks()[0];
+  if (vt) vt.contentHint = q.frameRate >= 60 ? 'motion' : 'detail';
+  return { stream, q };
+}
 async function startShare() {
   if ((IS_DESKTOP && !pickerSel) || !S.voice) return;
-  const withAudio = $('share-audio').checked; const q = QUALITY[$('quality').value];
+  const mode = pickerMode;
   closeModal('picker');
   try {
-    if (window.telao) await window.telao.chooseSource(pickerSel, withAudio);
-    const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { width: { ideal: q.width }, height: { ideal: q.height }, frameRate: { ideal: q.frameRate } }, audio: withAudio,
-      systemAudio: withAudio ? 'include' : 'exclude', selfBrowserSurface: 'exclude',
-    });
-    const vt = stream.getVideoTracks()[0];
-    if (vt) { vt.contentHint = q.frameRate >= 60 ? 'motion' : 'detail'; vt.onended = () => stopShare(); }
+    const { stream, q } = await captureScreen();
+    if (!S.voice) { stream.getTracks().forEach((t) => t.stop()); return; }
+    if (mode === 'switch' && S.pubs.screen) { switchShare(stream, q); return; }
+    stream.getVideoTracks()[0]?.addEventListener('ended', () => { if (S.pubs.screen?.stream === stream) stopShare(); });
     S.remote.set('local:screen', { call: null, el: screenTile(stream, S.me.name, true), at: Date.now() });
     await publish('screen', stream, q.bitrate);
-    Sound.play('streamStart'); updateVoiceUI();
-  } catch (e) { console.error(e); toast('Não foi possível transmitir a tela.'); }
+    startLiveHud(); Sound.play('streamStart'); updateVoiceUI();
+  } catch (e) {
+    console.error(e);
+    if (e?.name !== 'NotAllowedError' && e?.name !== 'AbortError') toast('Não foi possível transmitir a tela.');
+  }
+}
+function switchShare(stream, q) { // troca a tela/janela sem derrubar quem está assistindo
+  const pub = S.pubs.screen; const old = pub.stream;
+  const newV = stream.getVideoTracks()[0], newA = stream.getAudioTracks()[0];
+  newV?.addEventListener('ended', () => { if (S.pubs.screen?.stream === stream) stopShare(); });
+  pub.stream = stream; pub.bitrate = q.bitrate;
+  if (!!newA === old.getAudioTracks().length > 0) {
+    for (const c of pub.calls.values()) {
+      const pc = c.peerConnection; if (!pc) continue;
+      for (const s of pc.getSenders()) {
+        if (s.track?.kind === 'video' && newV) s.replaceTrack(newV).catch(() => {});
+        else if (s.track?.kind === 'audio' && newA) s.replaceTrack(newA).catch(() => {});
+      }
+      applyBitrates(pc, 'screen', pub);
+    }
+  } else { // passou a ter (ou deixou de ter) som: reconecta quem está assistindo
+    const watchers = [...pub.calls.keys()];
+    for (const c of pub.calls.values()) c.close();
+    pub.calls.clear();
+    for (const id of watchers) callPeer('screen', id);
+  }
+  old.getTracks().forEach((t) => t.stop());
+  const local = S.remote.get('local:screen'); if (local?.el) local.el.querySelector('video').srcObject = stream;
+  Sound.play('click'); toast('Transmissão trocada.');
 }
 function stopShare() { if (!S.pubs.screen) return; unpublish('screen'); Sound.play('streamStop'); }
+
+// painel AO VIVO de quem transmite
+function startLiveHud() {
+  S.liveStart = Date.now(); $('live-hud').classList.remove('hidden'); updateLiveHud();
+  clearInterval(liveTimer); liveTimer = setInterval(updateLiveHud, 1000);
+}
+function stopLiveHud() { clearInterval(liveTimer); liveTimer = null; $('live-hud').classList.add('hidden'); }
+function updateLiveHud() {
+  if (!S.pubs.screen) return;
+  const s = Math.floor((Date.now() - (S.liveStart || Date.now())) / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  $('live-timer').textContent = (h ? h + ':' + String(m).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + String(sec).padStart(2, '0');
+  $('live-viewers').textContent = String(S.pubs.screen.calls.size);
+}
+
+// assistir é opcional (como no Discord): o vídeo só chega para quem pede
+function watchStream(u) {
+  if (!S.voice) return;
+  S.watching.add(u.peerId);
+  S.presence.get(S.voice.serverId)?.send({ type: 'broadcast', event: 'watch', payload: { target: u.peerId, viewer: S.peerId } });
+  renderUserTiles();
+  setTimeout(() => {
+    if (S.watching.has(u.peerId) && !S.remote.has(u.peerId + ':screen')) { S.watching.delete(u.peerId); renderUserTiles(); toast('Não foi possível abrir a transmissão. Tente de novo.'); }
+  }, 12000);
+}
+function stopWatching(peerId) {
+  S.watching.delete(peerId); S.rewatch.delete(peerId);
+  if (S.voice) S.presence.get(S.voice.serverId)?.send({ type: 'broadcast', event: 'unwatch', payload: { target: peerId, viewer: S.peerId } });
+  removeRemote(peerId + ':screen');
+}
+function onWatchRequest(p, scope) {
+  if (!S.voice || S.voice.serverId !== scope || !p || p.target !== S.peerId || !S.pubs.screen) return;
+  if (!voiceUsers(scope, S.voice.channelId).some((u) => u.peerId === p.viewer)) return; // só quem está na mesma chamada
+  if (S.pubs.screen.calls.has(p.viewer)) return;
+  callPeer('screen', p.viewer); Sound.play('watchJoin'); updateLiveHud(); trackVoice();
+}
+function onUnwatch(p, scope) {
+  if (!S.voice || S.voice.serverId !== scope || !p || p.target !== S.peerId || !S.pubs.screen) return;
+  const c = S.pubs.screen.calls.get(p.viewer);
+  if (c) { S.pubs.screen.calls.delete(p.viewer); c.close(); }
+  updateLiveHud(); trackVoice();
+}
 
 // ---------- configurações ----------
 let draft = null;

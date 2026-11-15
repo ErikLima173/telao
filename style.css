@@ -510,3 +510,86 @@ select.role-add { width: auto; padding: 4px 8px; font-size: 12px; background: va
   .tile .fs { opacity: 1; }
   .f-name .tag { display: inline; }
 }
+
+/* ---------- Telao Ao Vivo ---------- */
+.live-box { width: min(1020px, 95vw); max-height: 90vh; background: var(--bg-2); border: 1px solid var(--line); border-radius: 18px; display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(124,92,255,.18), 0 30px 80px rgba(0,0,0,.6); }
+.live-head { display: flex; align-items: center; gap: 14px; padding: 18px 20px; background: linear-gradient(135deg, rgba(139,92,246,.20), rgba(34,211,238,.08)); border-bottom: 1px solid var(--line); }
+.live-logo { width: 40px; height: 40px; display: block; flex-shrink: 0; }
+.live-titles { flex: 1; min-width: 0; }
+.live-titles h2 { font-size: 20px; }
+.live-titles p { margin: 2px 0 0; font-size: 13px; }
+.live-body { display: grid; grid-template-columns: 1fr 340px; min-height: 0; flex: 1; }
+.live-left { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; min-height: 0; border-right: 1px solid var(--line); }
+.live-right { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; background: var(--bg-1); overflow-y: auto; }
+.seg { display: flex; gap: 4px; background: var(--bg-0); border: 1px solid var(--line); border-radius: 10px; padding: 4px; }
+.seg-btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 10px; border-radius: 7px; color: var(--text-2); font-weight: 600; transition: background .12s, color .12s; }
+.seg-btn .ico { width: 16px; height: 16px; }
+.seg-btn:hover { color: var(--text); background: var(--bg-3); }
+.seg-btn.active { background: linear-gradient(135deg, #7c5cff, #5b7cff); color: #fff; }
+.quality-seg .seg-btn { flex-direction: column; gap: 1px; padding: 8px 6px; }
+.quality-seg small { font-size: 10px; font-weight: 500; opacity: .8; }
+#picker .sources { padding: 0; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; overflow-y: auto; max-height: 56vh; align-content: start; }
+#picker .source { padding: 0; background: var(--bg-3); border: 2px solid transparent; border-radius: 12px; overflow: hidden; text-align: left; transition: border-color .12s, transform .12s; }
+#picker .source:hover { border-color: var(--bg-5); transform: translateY(-1px); }
+#picker .source.sel { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(124,92,255,.25); }
+.src-thumb { aspect-ratio: 16/9; background: #000; display: grid; place-items: center; color: var(--muted); }
+.src-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.src-thumb .ico { width: 32px; height: 32px; }
+.src-cap { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 12px; font-weight: 600; }
+.src-cap span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src-icon { width: 18px; height: 18px; flex-shrink: 0; border-radius: 4px; }
+.live-preview { position: relative; aspect-ratio: 16/9; background: #000; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
+.live-preview video { width: 100%; height: 100%; object-fit: contain; display: block; }
+.lp-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 12px; text-align: center; padding: 14px;
+  background: radial-gradient(circle at 50% 40%, var(--bg-3), #000); }
+.lp-empty .ico { width: 30px; height: 30px; }
+.lp-badge { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,.6); color: #fff; font-size: 9px; font-weight: 800; letter-spacing: 1px; padding: 3px 6px; border-radius: 4px; }
+.live-audio { border: 1px solid var(--line); border-radius: 10px; }
+.live-go { margin-top: 4px; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 13px; border-radius: 12px; font-weight: 800; font-size: 15px; color: #fff;
+  background: linear-gradient(135deg, #ef4444, #f97316); box-shadow: 0 8px 24px rgba(239,68,68,.35); transition: transform .12s, box-shadow .12s, opacity .12s; }
+.live-go:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 10px 28px rgba(239,68,68,.45); }
+.live-dot { width: 10px; height: 10px; border-radius: 50%; background: #fff; animation: livePulse 1.6s infinite; flex-shrink: 0; }
+@keyframes livePulse { 0% { box-shadow: 0 0 0 0 rgba(255,255,255,.6); } 70% { box-shadow: 0 0 0 8px rgba(255,255,255,0); } 100% { box-shadow: 0 0 0 0 rgba(255,255,255,0); } }
+.live-note { margin: 0; text-align: center; }
+#picker .picker-hint { padding: 0; margin: 0; text-align: center; }
+#picker .web-share-note .dl-link { margin-top: 12px; }
+
+/* painel AO VIVO de quem transmite */
+.voice-stage { position: relative; }
+.live-hud { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 3; display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 14px; border-radius: 999px;
+  background: rgba(15,16,23,.9); border: 1px solid rgba(239,68,68,.45); box-shadow: 0 8px 26px rgba(0,0,0,.45); font-size: 13px; white-space: nowrap; }
+.live-hud .live-dot { background: var(--live); animation-name: livePulseRed; }
+@keyframes livePulseRed { 0% { box-shadow: 0 0 0 0 rgba(239,68,68,.7); } 70% { box-shadow: 0 0 0 8px rgba(239,68,68,0); } 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } }
+.live-hud b { color: #ff8a8a; letter-spacing: 1px; font-size: 12px; }
+.lh-sep { width: 1px; height: 16px; background: var(--line); }
+#live-timer { font-variant-numeric: tabular-nums; color: var(--text-2); }
+.lh-viewers { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); }
+.lh-viewers .ico { width: 15px; height: 15px; }
+.lh-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; background: var(--bg-4); font-weight: 600; font-size: 12px; }
+.lh-btn .ico { width: 14px; height: 14px; }
+.lh-btn:hover { background: var(--bg-5); }
+.lh-btn.stop { background: var(--red); color: #fff; }
+.lh-btn.stop:hover { background: #dc2626; }
+.voice-stage:has(.live-hud:not(.hidden)) .tiles { padding-top: 64px; }
+
+/* cartão "Assistir transmissão" e vídeo assistido */
+.tile.stream-card { background: #000; display: grid; place-items: center; cursor: default; border: 2px solid rgba(239,68,68,.5); }
+.sc-bg { position: absolute; inset: -24px; background-size: cover; background-position: center; filter: blur(18px) brightness(.45) saturate(1.2); }
+.sc-inner { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 12px; }
+.sc-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.sc-watchers { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-2); background: rgba(0,0,0,.45); padding: 2px 8px; border-radius: 999px; }
+.sc-watchers .ico { width: 13px; height: 13px; }
+.sc-name { font-family: var(--font-head); font-weight: 700; font-size: 17px; }
+.sc-sub { color: var(--text-2); font-size: 12px; margin-top: -4px; }
+.sc-btn { margin-top: 6px; padding: 9px 18px; border-radius: 999px; font-weight: 700; color: #fff; background: linear-gradient(135deg, #ef4444, #f97316); box-shadow: 0 6px 18px rgba(239,68,68,.35); }
+.sc-btn:hover:not(:disabled) { filter: brightness(1.08); }
+.sc-btn:disabled { opacity: .7; cursor: wait; }
+.tile.stream-tile { border: 2px solid rgba(239,68,68,.35); }
+.sw-stop { position: absolute; top: 10px; right: 10px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; background: rgba(0,0,0,.6); color: #fff;
+  font-size: 12px; font-weight: 600; opacity: 0; transition: opacity .15s; }
+.sw-stop .ico { width: 13px; height: 13px; }
+.tile:hover .sw-stop { opacity: 1; }
+@media (hover: none) { .sw-stop { opacity: 1; } }
+@media (max-width: 860px) { .live-body { grid-template-columns: 1fr; } .live-left { border-right: 0; border-bottom: 1px solid var(--line); } #picker .sources { max-height: 34vh; } }
+@media (max-width: 768px) { .live-box { width: 100%; max-height: 92dvh; border-radius: 16px 16px 0 0; } .live-hud { top: 8px; font-size: 12px; gap: 6px; } .lh-btn span { display: none; } }
