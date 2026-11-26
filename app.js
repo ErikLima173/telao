@@ -240,7 +240,7 @@ async function enterApp() {
   renderRail();
   const last = store.get('telao-last-server', null);
   if (last && S.servers.some((s) => s.id === last)) selectServer(last); else goHome();
-  offerRejoin();
+  offerRejoin(); showFixResult();
 }
 
 async function claimLegacy() {
@@ -632,7 +632,9 @@ function renderChannels() {
           const r = el('li'); r.append(avatar(u.uid, 24, { peer: u.peerId }), el('span', 'nm', nameOf(u.uid)));
           if (u.live) r.append(el('span', 'badge-live', 'AO VIVO'));
           if (u.deaf) r.append(icon('headphonesOff')); else if (!u.mic) r.append(icon('micOff'));
+          if (u.uid !== S.user.id && volOf(u.uid).mute) r.append(icon('volumeX'));
           r.onclick = (e) => { e.stopPropagation(); openProfile(u.uid); };
+          if (u.uid !== S.user.id) r.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); openVolPop(u.uid, { x: e.clientX, y: e.clientY }); };
           ul.appendChild(r);
         }
         li.appendChild(ul);
@@ -1238,6 +1240,7 @@ function showAudioUnlock() { // celulares bloqueiam som que não começou com um
   const b = el('button', 'audio-unlock', 'Toque para ativar o som da chamada'); b.id = 'audio-unlock';
   b.onclick = () => {
     document.querySelectorAll('audio.remote-audio, .tile video:not(.local)').forEach((m) => m.play?.().catch(() => {}));
+    audioCtx?.resume?.().catch(() => {});
     Sound.play('click'); b.remove();
   };
   document.body.appendChild(b);
@@ -1488,6 +1491,8 @@ function ensurePresence(scope) {
   ch.on('broadcast', { event: 'refresh' }, () => { if (S.server?.id === scope) loadRoles().then(loadChannels); });
   ch.on('broadcast', { event: 'watch' }, ({ payload }) => onWatchRequest(payload, scope));
   ch.on('broadcast', { event: 'unwatch' }, ({ payload }) => onUnwatch(payload, scope));
+  ch.on('broadcast', { event: 'react' }, ({ payload }) => onReact(payload, scope));
+  ch.on('broadcast', { event: 'black' }, ({ payload }) => onBlackNotice(payload, scope));
   ch.subscribe((st, err) => {
     if (st === 'SUBSCRIBED') { if (S.voice?.serverId === scope) trackVoice(); return; }
     if (st !== 'CLOSED' || ch._intentional) return;
@@ -1662,7 +1667,8 @@ async function leaveVoice() {
   clearInterval(S.callBeat); clearLastCall(); // saiu de propósito: não oferece voltar
   // a tela atualiza na hora; a saída da presença no servidor vai em seguida
   Sound.play('leave');
-  $('voice-panel').classList.add('hidden'); $('tiles').innerHTML = '';
+  $('voice-panel').classList.add('hidden'); $('tiles').innerHTML = ''; $('tiles').classList.remove('focus');
+  closeVolPop(); closeReactTray();
   updateVoiceUI();
   if (S.server?.id === serverId) renderChannels();
   if (S.viewCh && (S.viewCh.kind === 'voice' || S.viewCh.kind === 'dm') && !S.textCh) openVoiceView(S.viewCh);
@@ -1684,7 +1690,7 @@ function toggleMute() {
 }
 function toggleDeafen() {
   S.deaf = !S.deaf;
-  document.querySelectorAll('audio.remote-audio, .tile video:not(.local)').forEach((a) => (a.muted = S.deaf));
+  applyVolumes();
   setMicTracks();
   Sound.play(S.deaf ? 'deafen' : 'undeafen');
   updateVoiceUI(); trackVoice(); renderUserTiles();
@@ -1729,7 +1735,7 @@ function onVoiceMembers() {
   // a voz vai para todos; a tela só para quem pediu para assistir
   for (const [kind, pub] of Object.entries(S.pubs)) if (kind !== 'screen') for (const id of ids) if (!pub.calls.has(id)) callPeer(kind, id);
   for (const id of [...S.watching]) if (!users.some((u) => u.peerId === id && u.live)) S.watching.delete(id);
-  tryRewatch();
+  tryRewatch(); applyVolumes();
   ensureProfiles(users.map((u) => u.uid)).then(renderUserTiles);
 }
 function renderUserTiles() {
@@ -1754,12 +1760,20 @@ function renderUserTiles() {
   }
   if (!users.some((u) => u.peerId === S.peerId)) users.unshift({ uid: S.user.id, peerId: S.peerId, mic: S.voice.mic && !S.voice.muted && !S.deaf, deaf: S.deaf });
   for (const u of users) {
-    const t = el('div', 'tile user'); t.dataset.peer = u.peerId;
-    const p = prof(u.uid);
+    const t = el('div', 'tile user'); t.dataset.peer = u.peerId; t.dataset.uid = u.uid;
+    const p = prof(u.uid); const mine = u.uid === S.user.id; const vol = mine ? null : volOf(u.uid);
     const bn = el('div', 'tile-banner'); if (p?.banner_url) bn.style.backgroundImage = `url("${p.banner_url}")`; else bn.style.background = p?.color || '#5865f2';
     const label = el('div', 'label'); label.appendChild(el('span', null, nameOf(u.uid)));
     if (u.deaf) label.appendChild(icon('headphonesOff')); else if (!u.mic) label.appendChild(icon('micOff'));
+    if (vol?.mute) label.appendChild(icon('volumeX'));
     t.append(bn, avatar(u.uid, 84, { peer: u.peerId }), label);
+    if (!mine) { // volume desta pessoa, só no seu PC: botão no quadro ou botão direito
+      const vb = el('button', 'tile-vol' + (vol.mute ? ' muted' : '')); vb.title = 'Volume de ' + nameOf(u.uid);
+      vb.appendChild(icon(vol.mute ? 'volumeX' : 'volume'));
+      vb.onclick = (e) => { e.stopPropagation(); openVolPop(u.uid, vb); };
+      t.appendChild(vb);
+      t.oncontextmenu = (e) => { e.preventDefault(); openVolPop(u.uid, { x: e.clientX, y: e.clientY }); };
+    }
     t.onclick = () => openProfile(u.uid);
     box.appendChild(t);
   }
@@ -1811,13 +1825,17 @@ function onIncomingCall(call) {
   call.on('stream', (stream) => {
     if (S.remote.get(key) !== entry) return;
     if (entry.el) { entry.el.querySelector('video,audio').srcObject = stream; return; }
-    if (kind === 'voice') { entry.el = audioEl(stream); watchSpeaking(call.peer, stream); }
+    const u = voiceUsers(S.voice.serverId, S.voice.channelId).find((x) => x.peerId === call.peer);
+    entry.uid = u?.uid || null;
+    if (kind === 'voice') { entry.el = audioEl(stream); entry.src = watchSpeaking(call.peer, stream); }
     else {
-      const u = voiceUsers(S.voice.serverId, S.voice.channelId).find((x) => x.peerId === call.peer);
       S.watching.add(call.peer);
-      entry.el = screenTile(stream, u ? nameOf(u.uid) : 'Alguém', false, call.peer);
+      entry.el = screenTile(stream, u ? nameOf(u.uid) : 'Alguém', false, call.peer, entry.uid);
+      // imagem chegando preta: mostra um aviso no quadro e deixa avisar quem transmite
+      entry.stopBlack = watchForBlack(entry.el.querySelector('video'), () => showViewerBlack(entry.el, call.peer), { checks: 5, wait: 3000, limit: 16 });
       renderUserTiles();
     }
+    applyVolumes();
   });
   call.on('close', () => {
     if (S.remote.get(key) !== entry) return; // já foi removido (ex.: clicou em "Parar de assistir")
@@ -1846,7 +1864,10 @@ function onVoiceClaim(p) {
 }
 function removeRemote(key) {
   const r = S.remote.get(key); if (!r) return;
-  S.remote.delete(key); r.call?.close(); r.el?.remove();
+  S.remote.delete(key); r.call?.close(); r.stopBlack?.();
+  if (r.el?.classList.contains('focused')) $('tiles').classList.remove('focus');
+  r.el?.remove();
+  try { r.gain?.disconnect(); r.src?.disconnect(); } catch {}
   if (key.endsWith(':voice')) S.analysers.delete(key.split(':')[0]);
   if (key.endsWith(':screen') && !key.startsWith('local:')) { S.watching.delete(key.split(':')[0]); if (S.voice) renderUserTiles(); }
 }
@@ -1858,33 +1879,305 @@ function audioEl(stream) {
   a.play?.().catch(() => showAudioUnlock());
   return wrap;
 }
-function screenTile(stream, name, local, peerId) {
-  const tile = el('div', 'tile stream-tile');
+function screenTile(stream, name, local, peerId, uid) {
+  const tile = el('div', 'tile stream-tile'); if (uid) tile.dataset.uid = uid;
   const v = document.createElement('video'); v.autoplay = true; v.playsInline = true; v.srcObject = stream;
   v.muted = local || S.deaf; if (local) v.classList.add('local'); applySink(v);
   const label = el('div', 'label'); label.append(el('span', 'badge-live', 'AO VIVO'), el('span', null, local ? 'Sua transmissão' : name));
-  const fs = el('button', 'fs'); fs.title = 'Tela cheia'; fs.appendChild(icon('maximize'));
+  const bar = el('div', 'sw-bar'); bar.onclick = bar.ondblclick = (e) => e.stopPropagation();
+  if (!local) { // volume da transmissão (só no seu PC)
+    const vol = el('div', 'sw-vol');
+    const mb = el('button', 'sw-btn sw-mute'); mb.title = 'Silenciar transmissão'; mb.appendChild(icon('volume'));
+    const r = document.createElement('input'); r.type = 'range'; r.className = 'sw-range'; r.min = '0'; r.max = '100'; r.step = '5'; r.value = '100'; r.title = 'Volume da transmissão';
+    mb.onclick = () => {
+      const u = tile.dataset.uid; if (!u) return;
+      const cur = volOf(u); const off = cur.smute || cur.stream === 0;
+      setVol(u, off ? { smute: false, stream: cur.stream || 100 } : { smute: true });
+      Sound.play(off ? 'unmute' : 'mute');
+    };
+    r.oninput = () => { const u = tile.dataset.uid; if (u) setVol(u, { stream: Number(r.value), smute: false }); };
+    vol.append(mb, r); bar.appendChild(vol);
+  }
+  if (!local && document.pictureInPictureEnabled) { // janela flutuante: continua vendo mesmo usando outro programa
+    const pip = el('button', 'sw-btn'); pip.title = 'Janela flutuante'; pip.appendChild(icon('pip'));
+    pip.onclick = () => (document.pictureInPictureElement === v ? document.exitPictureInPicture() : v.requestPictureInPicture()).catch(() => toast('Não deu para abrir a janela flutuante.'));
+    bar.appendChild(pip);
+  }
+  const focus = el('button', 'sw-btn sw-focus'); focus.title = 'Focar nesta transmissão'; focus.appendChild(icon('expand'));
+  focus.onclick = () => toggleFocus(tile);
+  const fs = el('button', 'sw-btn'); fs.title = 'Tela cheia'; fs.appendChild(icon('maximize'));
   fs.onclick = (e) => { e.stopPropagation(); document.fullscreenElement ? document.exitFullscreen() : tile.requestFullscreen(); };
+  bar.append(focus, fs);
   tile.ondblclick = fs.onclick;
-  tile.append(v, label, fs);
+  tile.append(v, label, bar);
   if (!local && peerId) { // quem assiste pode parar quando quiser
     const stop = el('button', 'sw-stop'); stop.title = 'Parar de assistir'; stop.append(icon('x'), el('span', null, 'Parar de assistir'));
     stop.onclick = (e) => { e.stopPropagation(); stopWatching(peerId); };
     tile.appendChild(stop);
+    tile.oncontextmenu = (e) => { const u = tile.dataset.uid; if (!u) return; e.preventDefault(); openVolPop(u, { x: e.clientX, y: e.clientY }); };
   }
   $('tiles').prepend(tile);
   if (!local) v.play?.().catch(() => showAudioUnlock());
   return tile;
 }
+function toggleFocus(tile) { // uma transmissão grande e o resto numa faixa embaixo
+  const box = $('tiles'); const on = !tile.classList.contains('focused');
+  box.querySelectorAll('.tile.focused').forEach((t) => { t.classList.remove('focused'); t.querySelector('.sw-focus')?.classList.remove('on'); });
+  tile.classList.toggle('focused', on); box.classList.toggle('focus', on);
+  const b = tile.querySelector('.sw-focus'); if (b) { b.classList.toggle('on', on); b.title = on ? 'Sair do foco' : 'Focar nesta transmissão'; }
+  if (on) box.scrollTop = 0;
+}
 
 let audioCtx = null;
+function getCtx() { // um contexto de áudio só, para medir quem fala e amplificar vozes
+  if (!audioCtx) {
+    audioCtx = new AudioContext();
+    audioCtx.onstatechange = () => applyVolumes();
+    applyCtxSink();
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+  return audioCtx;
+}
+function applyCtxSink() {
+  const id = S.audioPrefs.out || '';
+  if (audioCtx?.setSinkId && audioCtx.sinkId !== id) audioCtx.setSinkId(id).catch(() => {});
+}
 function watchSpeaking(peerId, stream) {
   try {
-    audioCtx = audioCtx || new AudioContext();
-    const src = audioCtx.createMediaStreamSource(stream);
-    const an = audioCtx.createAnalyser(); an.fftSize = 512; src.connect(an);
+    const ctx = getCtx();
+    const src = ctx.createMediaStreamSource(stream);
+    const an = ctx.createAnalyser(); an.fftSize = 512; src.connect(an);
     S.analysers.set(peerId, an);
-  } catch {}
+    return src;
+  } catch { return null; }
+}
+
+// ---------- volume de cada pessoa (só no seu PC, como no Discord) ----------
+// voz de 0 a 200% (acima de 100% o som passa por um amplificador); transmissão de 0 a 100%
+const volPrefs = store.get('telao-vol', {}) || {};
+function volOf(uid) {
+  const v = (uid && volPrefs[uid]) || {};
+  return { voice: Number.isFinite(v.voice) ? v.voice : 100, mute: !!v.mute, stream: Number.isFinite(v.stream) ? v.stream : 100, smute: !!v.smute };
+}
+function setVol(uid, patch) {
+  if (!uid || uid === S.user?.id) return;
+  const before = volOf(uid); const v = { ...before, ...patch };
+  if (v.voice === 100 && !v.mute && v.stream === 100 && !v.smute) delete volPrefs[uid]; else volPrefs[uid] = v;
+  store.set('telao-vol', volPrefs);
+  applyVolumes();
+  if (v.mute !== before.mute) { renderUserTiles(); if (S.server) renderChannels(); }
+}
+function uidOfPeer(pid) {
+  return S.voice ? voiceUsers(S.voice.serverId, S.voice.channelId).find((u) => u.peerId === pid)?.uid || null : null;
+}
+function applyVolumes() {
+  for (const [key, r] of S.remote) {
+    const [pid, kind] = key.split(':'); if (pid === 'local' || !r.el) continue;
+    if (!r.uid) r.uid = uidOfPeer(pid);
+    const v = volOf(r.uid);
+    if (kind === 'voice') { applyVoiceVol(r, v); continue; }
+    if (r.uid) r.el.dataset.uid = r.uid;
+    const vid = r.el.querySelector('video'); if (!vid) continue;
+    const off = v.smute || v.stream === 0;
+    vid.volume = Math.min(1, v.stream / 100); vid.muted = S.deaf || off;
+    const mb = r.el.querySelector('.sw-mute'), rg = r.el.querySelector('.sw-range');
+    if (mb) { setIcon(mb, off ? 'volumeX' : 'volume'); mb.classList.toggle('on', off); mb.title = off ? 'Ativar som da transmissão' : 'Silenciar transmissão'; }
+    if (rg) { if (document.activeElement !== rg) rg.value = String(off ? 0 : v.stream); rg.style.setProperty('--fill', (off ? 0 : v.stream) + '%'); }
+  }
+}
+function applyVoiceVol(r, v) {
+  const a = r.el.querySelector('audio'); if (!a) return;
+  const off = S.deaf || v.mute || v.voice === 0;
+  const boost = !off && v.voice > 100 && ensureBoost(r) && audioCtx.state === 'running';
+  a.volume = Math.min(1, v.voice / 100);
+  a.muted = off || boost; // com reforço, o som sai pelo amplificador e o elemento fica mudo
+  if (r.gain) r.gain.gain.value = boost ? v.voice / 100 : 0;
+}
+function ensureBoost(r) {
+  try {
+    const ctx = getCtx(); if (r.gain) return true;
+    const stream = r.el.querySelector('audio')?.srcObject; if (!stream) return false;
+    if (!r.src) r.src = ctx.createMediaStreamSource(stream);
+    const g = ctx.createGain(); g.gain.value = 0;
+    r.src.connect(g); g.connect(ctx.destination); r.gain = g;
+    return true;
+  } catch { return false; }
+}
+let volPop = null;
+function closeVolPop() { volPop?.remove(); volPop = null; }
+function openVolPop(uid, at) {
+  closeVolPop();
+  if (!uid) return;
+  if (uid === S.user.id) { openProfile(uid); return; }
+  const rect = at instanceof Element ? at.getBoundingClientRect() : at?.left != null ? at : { left: at?.x || 0, right: at?.x || 0, top: at?.y || 0, bottom: at?.y || 0 };
+  const v = volOf(uid);
+  const pop = el('div', 'vol-pop'); pop.id = 'vol-pop';
+  const head = el('div', 'vp-head'); head.append(avatar(uid, 32), el('b', null, nameOf(uid)));
+  pop.appendChild(head);
+  pop.appendChild(volRow('Volume da voz', 'volume', v.voice, 200, v.mute, 'Silenciar para mim',
+    (n) => setVol(uid, { voice: n, mute: false }), (m) => setVol(uid, { mute: m })));
+  const live = S.voice && voiceUsers(S.voice.serverId, S.voice.channelId).some((u) => u.uid === uid && u.live);
+  if (live) pop.appendChild(volRow('Volume da transmissão', 'monitor', v.stream, 100, v.smute, 'Silenciar transmissão',
+    (n) => setVol(uid, { stream: n, smute: false }), (m) => setVol(uid, { smute: m })));
+  const foot = el('div', 'vp-foot');
+  const reset = el('button', 'vp-link', 'Voltar ao padrão');
+  reset.onclick = () => { setVol(uid, { voice: 100, mute: false, stream: 100, smute: false }); openVolPop(uid, rect); };
+  const see = el('button', 'vp-link', 'Ver perfil'); see.onclick = () => { closeVolPop(); openProfile(uid); };
+  foot.append(reset, see); pop.appendChild(foot);
+  document.body.appendChild(pop); placePop(pop, rect); volPop = pop;
+}
+function volRow(title, ic, value, max, muted, muteTitle, onValue, onMute) {
+  const row = el('div', 'vp-row');
+  const pct = el('span', 'vp-pct');
+  const top = el('div', 'vp-top'); top.append(el('span', null, title), pct);
+  const mb = el('button', 'vp-mute'); mb.title = muteTitle;
+  const r = document.createElement('input'); r.type = 'range'; r.className = 'vol-range'; r.min = '0'; r.max = String(max); r.step = '5'; r.value = String(value);
+  const paint = (m) => {
+    mb.classList.toggle('on', m); setIcon(mb, m ? 'volumeX' : ic);
+    r.style.setProperty('--fill', (r.value / max) * 100 + '%'); r.classList.toggle('dim', m);
+    pct.textContent = m ? 'Mudo' : r.value + '%'; pct.classList.toggle('boost', !m && Number(r.value) > 100);
+  };
+  r.oninput = () => { paint(false); onValue(Number(r.value)); };
+  mb.onclick = () => { const m = !mb.classList.contains('on'); paint(m); onMute(m); Sound.play(m ? 'mute' : 'unmute'); };
+  paint(muted);
+  const line = el('div', 'vp-line'); line.append(mb, r);
+  row.append(top, line);
+  return row;
+}
+function placePop(pop, rect) {
+  if (isMobile()) { pop.classList.add('sheet'); return; }
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  let x = rect.right + 8, y = rect.top;
+  if (x + w > innerWidth - 8) x = rect.left - w - 8;
+  if (x < 8) x = Math.max(8, Math.min(innerWidth - w - 8, rect.left));
+  if (y + h > innerHeight - 8) y = innerHeight - h - 8;
+  pop.style.left = Math.round(x) + 'px'; pop.style.top = Math.round(Math.max(8, y)) + 'px';
+}
+document.addEventListener('mousedown', (e) => { if (volPop && !e.target.closest('#vol-pop')) closeVolPop(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeVolPop(); closeReactTray(); } });
+window.addEventListener('resize', () => closeVolPop());
+$('tiles').addEventListener('scroll', () => closeVolPop());
+
+// ---------- reações na chamada ----------
+const REACTIONS = ['👍', '😂', '😮', '❤️', '🔥', '👏'];
+let lastReactSent = 0, lastReactSound = 0;
+for (const e of REACTIONS) { const b = el('button', 'react-btn', e); b.title = 'Reagir'; b.onclick = () => sendReaction(e); $('react-tray').appendChild(b); }
+function closeReactTray() { $('react-tray').classList.add('hidden'); $('ctl-react').classList.remove('on'); }
+$('ctl-react').onclick = () => {
+  const open = $('react-tray').classList.contains('hidden');
+  $('react-tray').classList.toggle('hidden', !open); $('ctl-react').classList.toggle('on', open);
+};
+document.addEventListener('mousedown', (e) => { if (!e.target.closest('#react-tray, #ctl-react')) closeReactTray(); });
+function sendReaction(emoji) {
+  if (!S.voice || Date.now() - lastReactSent < 600) return;
+  lastReactSent = Date.now();
+  S.presence.get(S.voice.serverId)?.send({ type: 'broadcast', event: 'react', payload: { uid: S.user.id, ch: S.voice.channelId, e: emoji } });
+  showReaction(S.user.id, emoji);
+}
+function onReact(p, scope) {
+  if (!S.voice || S.voice.serverId !== scope || !p || p.ch !== S.voice.channelId || p.uid === S.user.id || !REACTIONS.includes(p.e)) return;
+  if (!voiceUsers(scope, S.voice.channelId).some((u) => u.uid === p.uid)) return; // só de quem está na mesma chamada
+  showReaction(p.uid, p.e);
+}
+function showReaction(uid, emoji) {
+  const now = Date.now();
+  if (!S.deaf && now - lastReactSound > 250) { lastReactSound = now; Sound.play('react'); }
+  const tile = document.querySelector(`#tiles .tile.user[data-uid="${uid}"]`);
+  if (!tile || tile.querySelectorAll('.react-float').length >= 6) return;
+  const f = el('span', 'react-float', emoji); f.style.left = 30 + Math.random() * 40 + '%';
+  tile.appendChild(f); setTimeout(() => f.remove(), 2300);
+}
+
+// ---------- transmissão preta: o Telao percebe sozinho e oferece a correção ----------
+const blackCv = document.createElement('canvas'); blackCv.width = 48; blackCv.height = 27;
+let blackCx = null;
+function frameIsBlack(v) { // true = imagem toda preta, false = tem imagem, null = ainda sem imagem
+  if (!v || v.readyState < 2 || !v.videoWidth) return null;
+  try {
+    blackCx = blackCx || blackCv.getContext('2d', { willReadFrequently: true });
+    blackCx.drawImage(v, 0, 0, 48, 27);
+    const d = blackCx.getImageData(0, 0, 48, 27).data;
+    let lit = 0; // só o cursor do mouse não conta como imagem
+    for (let i = 0; i < d.length; i += 4) if ((d[i] > 12 || d[i + 1] > 12 || d[i + 2] > 12) && ++lit > 4) return false;
+    return true;
+  } catch { return null; }
+}
+function watchForBlack(v, onBlack, { checks = 4, every = 1500, wait = 2500, limit = 12 } = {}) {
+  let hits = 0, ticks = 0, timer = null, done = false;
+  const stop = () => { done = true; clearTimeout(timer); };
+  const tick = () => {
+    if (done) return;
+    if (!v?.isConnected || ++ticks > limit) { stop(); return; }
+    const b = frameIsBlack(v);
+    hits = b === true ? hits + 1 : b === false ? 0 : hits;
+    if (hits >= checks) { stop(); onBlack(); return; }
+    timer = setTimeout(tick, every);
+  };
+  timer = setTimeout(tick, wait);
+  return stop;
+}
+function watchLocalBlack(tile) { // logo depois de entrar ao vivo: se a sua tela sair preta, o Telao avisa
+  return watchForBlack(tile.querySelector('video'), () => { if (S.pubs.screen) showBlackHelp('local'); }, { checks: 4, every: 1500, wait: 2500, limit: 12 });
+}
+function showViewerBlack(tile, peerId) {
+  if (!tile.isConnected || tile.querySelector('.sw-black')) return;
+  const box = el('div', 'sw-black'); box.onclick = box.ondblclick = (e) => e.stopPropagation();
+  const uid = S.remote.get(peerId + ':screen')?.uid || uidOfPeer(peerId);
+  const tell = el('button', 'sw-black-tell', uid ? 'Avisar ' + nameOf(uid) : 'Avisar quem transmite');
+  tell.onclick = () => {
+    const to = S.remote.get(peerId + ':screen')?.uid || uidOfPeer(peerId);
+    if (!to || !S.voice) return;
+    S.presence.get(S.voice.serverId)?.send({ type: 'broadcast', event: 'black', payload: { to, from: S.user.id, ch: S.voice.channelId } });
+    tell.disabled = true; tell.textContent = 'Avisado'; Sound.play('click');
+  };
+  const x = el('button', 'sw-black-x'); x.title = 'Fechar'; x.appendChild(icon('x')); x.onclick = () => box.remove();
+  box.append(icon('alert'), el('span', null, 'A imagem está chegando preta.'), tell, x);
+  tile.appendChild(box);
+  const v = tile.querySelector('video'); // o aviso some sozinho quando a imagem voltar
+  const iv = setInterval(() => { if (!box.isConnected) clearInterval(iv); else if (frameIsBlack(v) === false) { box.remove(); clearInterval(iv); } }, 2000);
+}
+function onBlackNotice(p, scope) {
+  if (!S.voice || S.voice.serverId !== scope || !p || p.to !== S.user.id || p.ch !== S.voice.channelId || !S.pubs.screen) return;
+  if (!voiceUsers(scope, S.voice.channelId).some((u) => u.uid === p.from)) return;
+  showBlackHelp('viewer', p.from);
+}
+let lastBlackHelp = 0;
+async function showBlackHelp(reason, from) {
+  if (!$('modal-black').classList.contains('hidden')) return;
+  if (reason !== 'manual') { if (Date.now() - lastBlackHelp < 60000) return; lastBlackHelp = Date.now(); }
+  $('black-title').textContent = reason === 'viewer' ? nameOf(from) + ' está vendo sua tela preta' : reason === 'local' ? 'Sua transmissão está saindo preta' : 'Tela preta na transmissão';
+  $('black-web').classList.toggle('hidden', IS_DESKTOP);
+  $('black-gfx-wrap').classList.toggle('hidden', !IS_DESKTOP);
+  const fix = $('black-fix'), step = $('black-step');
+  fix.classList.add('hidden'); fix.disabled = false; step.textContent = '';
+  if (IS_DESKTOP) {
+    const cfg = await window.telao.getConfig().catch(() => ({}));
+    if (!cfg.compatCapture) { fix.textContent = 'Corrigir automaticamente'; step.textContent = 'O Telao liga o modo de captura compatível e reinicia. Se você estiver numa chamada, aparece o botão para voltar.'; fix.classList.remove('hidden'); }
+    else if (cfg.hwAccel !== false) { fix.textContent = 'Tentar a segunda correção'; step.textContent = 'O modo de captura compatível já está ligado. Agora o Telao desliga a aceleração de hardware e reinicia.'; fix.classList.remove('hidden'); }
+    else step.textContent = 'As duas correções automáticas já estão ligadas. Veja as dicas abaixo. Dá para desfazer em Configurações > Avançado.';
+  }
+  step.classList.toggle('hidden', !step.textContent);
+  openModal('modal-black');
+  if (reason !== 'manual') Sound.play('notify');
+}
+$('black-fix').onclick = async () => {
+  if (!window.telao) return;
+  const cfg = await window.telao.getConfig().catch(() => ({}));
+  const patch = !cfg.compatCapture ? { compatCapture: true } : cfg.hwAccel !== false ? { hwAccel: false } : null;
+  if (!patch) return;
+  $('black-fix').disabled = true; $('black-fix').textContent = 'Reiniciando...';
+  await window.telao.setConfig(patch);
+  store.set('telao-fixed', { what: patch.compatCapture ? 'compat' : 'hw', at: Date.now() });
+  leaveOnExit(); // lembra a chamada (para o botão "Voltar") e fecha as conexões antes de reiniciar
+  window.telao.relaunch();
+};
+$('black-gfx').onclick = () => window.telao?.openGraphicsSettings?.();
+$('live-black-fix').onclick = () => showBlackHelp('manual');
+function showFixResult() { // depois de reiniciar pela correção da tela preta
+  const f = store.get('telao-fixed', null); if (!f) return;
+  try { localStorage.removeItem('telao-fixed'); } catch {}
+  if (Date.now() - f.at > 5 * 60 * 1000) return;
+  setTimeout(() => toast(f.what === 'compat' ? 'Modo de captura compatível ligado. Transmita de novo para testar.' : 'Aceleração de hardware desligada. Transmita de novo para testar.'), 1200);
 }
 const levelBuf = new Uint8Array(512);
 setInterval(() => {
@@ -2041,10 +2334,15 @@ async function selectSource(id) {
     if (token === previewToken) { showPreview(null); $('lp-empty-text').textContent = 'Não deu para mostrar a prévia, mas você ainda pode transmitir.'; }
   }
 }
+let previewBlackStop = null;
 function showPreview(stream) {
   const v = $('live-preview-video'); v.srcObject = stream || null;
   $('lp-empty').classList.toggle('hidden', !!stream);
-  if (stream) v.play?.().catch(() => {}); else $('lp-empty-text').textContent = 'Escolha uma tela ou janela para ver a prévia.';
+  previewBlackStop?.(); previewBlackStop = null; $('live-black').classList.add('hidden');
+  if (stream) { // prévia preta: avisa antes mesmo de entrar ao vivo
+    v.play?.().catch(() => {});
+    previewBlackStop = watchForBlack(v, () => { if (v.srcObject === stream) $('live-black').classList.remove('hidden'); }, { checks: 2, every: 1200, wait: 1200, limit: 8 });
+  } else $('lp-empty-text').textContent = 'Escolha uma tela ou janela para ver a prévia.';
 }
 function stopPreview() { if (previewStream) { previewStream.getTracks().forEach((t) => t.stop()); previewStream = null; } }
 function stopPicker() { clearInterval(pickerRefresh); pickerRefresh = null; previewToken++; stopPreview(); showPreview(null); }
@@ -2070,7 +2368,8 @@ async function startShare() {
     if (!S.voice) { stream.getTracks().forEach((t) => t.stop()); return; }
     if (mode === 'switch' && S.pubs.screen) { switchShare(stream, q); return; }
     stream.getVideoTracks()[0]?.addEventListener('ended', () => { if (S.pubs.screen?.stream === stream) stopShare(); });
-    S.remote.set('local:screen', { call: null, el: screenTile(stream, S.me.name, true), at: Date.now() });
+    const tile = screenTile(stream, S.me.name, true);
+    S.remote.set('local:screen', { call: null, el: tile, at: Date.now(), stopBlack: watchLocalBlack(tile) });
     await publish('screen', stream, q.bitrate);
     startLiveHud(); Sound.play('streamStart'); updateVoiceUI();
   } catch (e) {
@@ -2099,7 +2398,8 @@ function switchShare(stream, q) { // troca a tela/janela sem derrubar quem está
     for (const id of watchers) callPeer('screen', id);
   }
   old.getTracks().forEach((t) => t.stop());
-  const local = S.remote.get('local:screen'); if (local?.el) local.el.querySelector('video').srcObject = stream;
+  const local = S.remote.get('local:screen');
+  if (local?.el) { local.el.querySelector('video').srcObject = stream; local.stopBlack?.(); local.stopBlack = watchLocalBlack(local.el); }
   Sound.play('click'); toast('Transmissão trocada.');
 }
 function stopShare() { if (!S.pubs.screen) return; unpublish('screen'); Sound.play('streamStop'); }
@@ -2256,6 +2556,7 @@ $('dev-in').onchange = () => { S.audioPrefs.in = $('dev-in').value; saveAudioPre
 $('dev-out').onchange = () => {
   S.audioPrefs.out = $('dev-out').value; saveAudioPrefs();
   document.querySelectorAll('audio.remote-audio, .tile video').forEach(applySink);
+  applyCtxSink();
 };
 $('mic-quality').onchange = () => {
   S.audioPrefs.quality = $('mic-quality').value; saveAudioPrefs();
@@ -2268,8 +2569,8 @@ async function startMicTest() {
   stopMicTest();
   try {
     const stream = await getMic();
-    audioCtx = audioCtx || new AudioContext();
-    const an = audioCtx.createAnalyser(); an.fftSize = 512; audioCtx.createMediaStreamSource(stream).connect(an);
+    const ctx = getCtx();
+    const an = ctx.createAnalyser(); an.fftSize = 512; ctx.createMediaStreamSource(stream).connect(an);
     const buf = new Uint8Array(512);
     const timer = setInterval(() => {
       an.getByteTimeDomainData(buf); let peak = 0; for (let i = 0; i < buf.length; i++) peak = Math.max(peak, Math.abs(buf[i] - 128));

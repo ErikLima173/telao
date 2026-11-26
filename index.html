@@ -167,9 +167,11 @@
             <button id="live-stop" class="lh-btn stop" title="Parar a transmissão"><i data-i="monitorStop"></i><span>Parar</span></button>
           </div>
           <div id="tiles" class="tiles"></div>
+          <div id="react-tray" class="react-tray hidden"></div>
           <div class="controls">
             <button id="ctl-mute" class="ctrl" title="Microfone"><i data-i="mic"></i></button>
             <button id="ctl-deafen" class="ctrl" title="Ensurdecer"><i data-i="headphones"></i></button>
+            <button id="ctl-react" class="ctrl" title="Reações"><i data-i="smile"></i></button>
             <button id="ctl-share" class="ctrl" title="Transmitir tela"><i data-i="monitor"></i></button>
             <button id="ctl-leave" class="ctrl danger" title="Sair da chamada"><i data-i="hangup"></i></button>
           </div>
@@ -298,6 +300,31 @@
         <div id="ce-roles" class="ce-roles"></div>
       </div>
       <div class="modal-foot"><button class="danger-btn" id="ce-delete">Apagar canal</button><span class="grow"></span><button class="primary" id="ce-save">Salvar</button></div>
+    </div>
+  </div>
+
+  <!-- Transmissão saindo preta -->
+  <div id="modal-black" class="modal hidden">
+    <div class="modal-box small">
+      <div class="modal-head"><h2 id="black-title">Tela preta na transmissão</h2><button class="icon close-modal"><i data-i="x"></i></button></div>
+      <div class="modal-body">
+        <p class="muted">Isso acontece em alguns PCs, principalmente em notebooks com duas placas de vídeo. Na maioria das vezes o Telao resolve sozinho.</p>
+        <button class="primary big hidden" id="black-fix">Corrigir automaticamente</button>
+        <p class="small muted" id="black-step"></p>
+        <p class="small muted hidden" id="black-web">No navegador: nas configurações dele, desligue "Usar aceleração de gráficos quando disponível" e reinicie o navegador. Ou use o app para Windows, que corrige isso sozinho.</p>
+        <div id="black-gfx-wrap" class="col-gap">
+          <label>Em notebooks</label>
+          <p class="small muted">Abra as configurações de gráficos do Windows, escolha o Telao e marque <b>Economia de energia</b>.</p>
+          <button class="big" id="black-gfx">Abrir configurações de gráficos do Windows</button>
+        </div>
+        <label>Também ajuda</label>
+        <ul class="steps small">
+          <li>Escolher a <b>tela inteira</b> em vez de uma janela.</li>
+          <li>Não minimizar a janela que você está transmitindo.</li>
+          <li>Em jogos, usar <b>janela sem bordas</b> em vez de tela cheia.</li>
+          <li>Filmes e apps protegidos (Netflix, por exemplo) ficam pretos de propósito.</li>
+        </ul>
+      </div>
     </div>
   </div>
 
@@ -440,6 +467,7 @@
             <div class="lp-empty" id="lp-empty"><i data-i="monitor"></i><span id="lp-empty-text">Escolha uma tela ou janela para ver a prévia.</span></div>
             <span class="lp-badge">PRÉVIA</span>
           </div>
+          <div id="live-black" class="live-black hidden"><i data-i="alert"></i><span>A prévia está saindo preta.</span><button id="live-black-fix">Como resolver</button></div>
           <label>Qualidade</label>
           <div class="seg quality-seg" id="live-quality">
             <button class="seg-btn" data-q="720"><b>Suave</b><small>720p · 30 fps</small></button>
